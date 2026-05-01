@@ -1,0 +1,2410 @@
+import { useState, useEffect, useCallback, useRef, useMemo, Component } from "react";
+
+// ═══════════════════════════════════════════════════════════════════
+// FILE: constants.js
+// ═══════════════════════════════════════════════════════════════════
+
+// CRITICAL: Do not change STORAGE_KEY without a migration — it will orphan all user data.
+const STORAGE_KEY = "et_progress_v3";
+const SCHEMA_VERSION = 3; // bump when shape changes; migrations live in storage.js
+
+const DAYS = ["MON","TUE","WED","THU","FRI","SAT","SUN"];
+const DAY_LABELS = { MON:"Monday", TUE:"Tuesday", WED:"Wednesday", THU:"Thursday", FRI:"Friday", SAT:"Saturday", SUN:"Sunday" };
+const DAY_FOCUS  = { MON:"Legs", TUE:"Back", WED:"Chest", THU:"Arms", FRI:"Shoulders", SAT:"Mobility", SUN:"Rest" };
+const DAY_COLORS = { MON:"#F472B6", TUE:"#60A5FA", WED:"#A78BFA", THU:"#FB923C", FRI:"#FCD34D", SAT:"#34D399", SUN:"#94A3B8" };
+
+const TECHNIQUES = [
+  { key:"bilateral",  label:"Bilateral",    short:"BIL", color:"#60A5FA" },
+  { key:"unilateral", label:"Unilateral",   short:"UNI", color:"#C084FC" },
+  { key:"eccentric",  label:"4s Eccentric", short:"4s−", color:"#FB923C" },
+  { key:"peakHold",   label:"4s Peak Hold", short:"4s+", color:"#F472B6" },
+  { key:"halfRep",    label:"1.5 Reps",     short:"1.5", color:"#34D399" },
+];
+const TECH_BY_KEY = Object.fromEntries(TECHNIQUES.map(t => [t.key, t]));
+
+const WORKOUT_PLAN = {
+  MON:[{name:"Hack Squats",target:15},{name:"DB Bulgarian Split Sq.",target:15},{name:"Glute Bridge",target:15},{name:"Lying Leg Curl",target:15},{name:"Leg Extension",target:15},{name:"Hip Abductor",target:15},{name:"Seated Calf Raise",target:15}],
+  TUE:[{name:"Pull Up",target:15},{name:"Incline CB Row",target:15},{name:"T-Bar Row",target:15},{name:"Reverse Pull",target:15},{name:"DB Shrugs",target:15},{name:"Neck Planks",target:15}],
+  WED:[{name:"Flat Chest Press (DB)",target:15},{name:"Dec. Chest Press (SM)",target:15},{name:"Inc. Chest Press (DB)",target:15},{name:"Inc. Chest Press (MC)",target:15},{name:"MC Chest Fly",target:15},{name:"Machine Crunches",target:15}],
+  THU:[{name:"DB Curl",target:15},{name:"Bayesian Cable Curl",target:15},{name:"CB Hammer Curl",target:15},{name:"CAP Pushdown",target:15},{name:"High Cable OHP",target:15},{name:"Tricep Chest Press (DB)",target:15}],
+  FRI:[{name:"PP OHP",target:15},{name:"Reverse",target:15},{name:"Seated Lateral Raise (DB)",target:15},{name:"Upright Rows",target:15},{name:"Power Over",target:15},{name:"Russian Twist",target:15}],
+  SAT:[{name:"Cossack Squats",target:15},{name:"Frog Pumps",target:15}],
+  SUN:[],
+};
+
+const MEASUREMENTS = [
+  {key:"bodyWeight",label:"Body Weight",unit:"kg",color:"#A78BFA"},
+  {key:"chest",label:"Chest",unit:"cm",color:"#F472B6"},
+  {key:"waist",label:"Waist",unit:"cm",color:"#FB923C"},
+  {key:"hips",label:"Hips",unit:"cm",color:"#FCD34D"},
+  {key:"leftBicep",label:"Left Bicep",unit:"cm",color:"#60A5FA"},
+  {key:"rightBicep",label:"Right Bicep",unit:"cm",color:"#34D399"},
+  {key:"leftThigh",label:"Left Thigh",unit:"cm",color:"#86EFAC"},
+  {key:"rightThigh",label:"Right Thigh",unit:"cm",color:"#F472B6"},
+  {key:"shoulders",label:"Shoulders",unit:"cm",color:"#A78BFA"},
+  {key:"neck",label:"Neck",unit:"cm",color:"#FB923C"},
+  {key:"leftCalf",label:"Left Calf",unit:"cm",color:"#FCD34D"},
+  {key:"rightCalf",label:"Right Calf",unit:"cm",color:"#60A5FA"},
+];
+
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+// ── Exercise database ───────────────────────────────────────────
+// Body parts in display order. Order matters — affects the browse list.
+const BODY_PARTS = ["Chest","Back","Shoulders","Biceps","Triceps","Quads","Hamstrings","Glutes","Calves","Core","Cardio"];
+
+// Each entry: { name, bodyPart, equipment }
+// Aiming for 6–10 popular movements per body part. Includes the default-plan exercises.
+const EXERCISE_DB = [
+  // ── Chest ──
+  { name:"Barbell Bench Press",        bodyPart:"Chest",      equipment:"Barbell" },
+  { name:"Incline Barbell Bench Press",bodyPart:"Chest",      equipment:"Barbell" },
+  { name:"Flat Chest Press (DB)",      bodyPart:"Chest",      equipment:"Dumbbell" },
+  { name:"Inc. Chest Press (DB)",      bodyPart:"Chest",      equipment:"Dumbbell" },
+  { name:"Dec. Chest Press (SM)",      bodyPart:"Chest",      equipment:"Smith" },
+  { name:"Inc. Chest Press (MC)",      bodyPart:"Chest",      equipment:"Machine" },
+  { name:"MC Chest Fly",               bodyPart:"Chest",      equipment:"Machine" },
+  { name:"Cable Crossover",            bodyPart:"Chest",      equipment:"Cable" },
+  { name:"Push-Up",                    bodyPart:"Chest",      equipment:"Bodyweight" },
+  { name:"Dips (Chest-leaning)",       bodyPart:"Chest",      equipment:"Bodyweight" },
+
+  // ── Back ──
+  { name:"Pull Up",                    bodyPart:"Back",       equipment:"Bodyweight" },
+  { name:"Lat Pulldown",               bodyPart:"Back",       equipment:"Cable" },
+  { name:"Barbell Row",                bodyPart:"Back",       equipment:"Barbell" },
+  { name:"T-Bar Row",                  bodyPart:"Back",       equipment:"Machine" },
+  { name:"Incline CB Row",             bodyPart:"Back",       equipment:"Cable" },
+  { name:"Seated Cable Row",           bodyPart:"Back",       equipment:"Cable" },
+  { name:"Reverse Pull",               bodyPart:"Back",       equipment:"Cable" },
+  { name:"Single-Arm DB Row",          bodyPart:"Back",       equipment:"Dumbbell" },
+  { name:"Deadlift",                   bodyPart:"Back",       equipment:"Barbell" },
+  { name:"DB Shrugs",                  bodyPart:"Back",       equipment:"Dumbbell" },
+
+  // ── Shoulders ──
+  { name:"Overhead Press (Barbell)",   bodyPart:"Shoulders",  equipment:"Barbell" },
+  { name:"PP OHP",                     bodyPart:"Shoulders",  equipment:"Barbell" },
+  { name:"Seated DB Press",            bodyPart:"Shoulders",  equipment:"Dumbbell" },
+  { name:"Seated Lateral Raise (DB)",  bodyPart:"Shoulders",  equipment:"Dumbbell" },
+  { name:"Cable Lateral Raise",        bodyPart:"Shoulders",  equipment:"Cable" },
+  { name:"Reverse",                    bodyPart:"Shoulders",  equipment:"Cable" },
+  { name:"Reverse Pec Deck",           bodyPart:"Shoulders",  equipment:"Machine" },
+  { name:"Upright Rows",               bodyPart:"Shoulders",  equipment:"Barbell" },
+  { name:"Power Over",                 bodyPart:"Shoulders",  equipment:"Cable" },
+  { name:"Face Pull",                  bodyPart:"Shoulders",  equipment:"Cable" },
+
+  // ── Biceps ──
+  { name:"DB Curl",                    bodyPart:"Biceps",     equipment:"Dumbbell" },
+  { name:"Barbell Curl",               bodyPart:"Biceps",     equipment:"Barbell" },
+  { name:"EZ Bar Curl",                bodyPart:"Biceps",     equipment:"Barbell" },
+  { name:"Bayesian Cable Curl",        bodyPart:"Biceps",     equipment:"Cable" },
+  { name:"CB Hammer Curl",             bodyPart:"Biceps",     equipment:"Cable" },
+  { name:"DB Hammer Curl",             bodyPart:"Biceps",     equipment:"Dumbbell" },
+  { name:"Preacher Curl",              bodyPart:"Biceps",     equipment:"Machine" },
+  { name:"Incline DB Curl",            bodyPart:"Biceps",     equipment:"Dumbbell" },
+
+  // ── Triceps ──
+  { name:"CAP Pushdown",               bodyPart:"Triceps",    equipment:"Cable" },
+  { name:"Cable Pushdown (Rope)",      bodyPart:"Triceps",    equipment:"Cable" },
+  { name:"Skull Crusher",              bodyPart:"Triceps",    equipment:"Barbell" },
+  { name:"Overhead Cable Extension",   bodyPart:"Triceps",    equipment:"Cable" },
+  { name:"High Cable OHP",             bodyPart:"Triceps",    equipment:"Cable" },
+  { name:"Tricep Chest Press (DB)",    bodyPart:"Triceps",    equipment:"Dumbbell" },
+  { name:"Close-Grip Bench Press",     bodyPart:"Triceps",    equipment:"Barbell" },
+  { name:"Tricep Dips",                bodyPart:"Triceps",    equipment:"Bodyweight" },
+
+  // ── Quads ──
+  { name:"Back Squat",                 bodyPart:"Quads",      equipment:"Barbell" },
+  { name:"Front Squat",                bodyPart:"Quads",      equipment:"Barbell" },
+  { name:"Hack Squats",                bodyPart:"Quads",      equipment:"Machine" },
+  { name:"Leg Press",                  bodyPart:"Quads",      equipment:"Machine" },
+  { name:"Leg Extension",              bodyPart:"Quads",      equipment:"Machine" },
+  { name:"DB Bulgarian Split Sq.",     bodyPart:"Quads",      equipment:"Dumbbell" },
+  { name:"Goblet Squat",               bodyPart:"Quads",      equipment:"Dumbbell" },
+  { name:"Walking Lunges",             bodyPart:"Quads",      equipment:"Dumbbell" },
+  { name:"Cossack Squats",             bodyPart:"Quads",      equipment:"Bodyweight" },
+
+  // ── Hamstrings ──
+  { name:"Romanian Deadlift",          bodyPart:"Hamstrings", equipment:"Barbell" },
+  { name:"DB Romanian Deadlift",       bodyPart:"Hamstrings", equipment:"Dumbbell" },
+  { name:"Lying Leg Curl",             bodyPart:"Hamstrings", equipment:"Machine" },
+  { name:"Seated Leg Curl",            bodyPart:"Hamstrings", equipment:"Machine" },
+  { name:"Good Morning",               bodyPart:"Hamstrings", equipment:"Barbell" },
+  { name:"Nordic Curl",                bodyPart:"Hamstrings", equipment:"Bodyweight" },
+
+  // ── Glutes ──
+  { name:"Hip Thrust",                 bodyPart:"Glutes",     equipment:"Barbell" },
+  { name:"Glute Bridge",               bodyPart:"Glutes",     equipment:"Bodyweight" },
+  { name:"Frog Pumps",                 bodyPart:"Glutes",     equipment:"Bodyweight" },
+  { name:"Hip Abductor",               bodyPart:"Glutes",     equipment:"Machine" },
+  { name:"Cable Kickback",             bodyPart:"Glutes",     equipment:"Cable" },
+  { name:"Sumo Deadlift",              bodyPart:"Glutes",     equipment:"Barbell" },
+
+  // ── Calves ──
+  { name:"Standing Calf Raise",        bodyPart:"Calves",     equipment:"Machine" },
+  { name:"Seated Calf Raise",          bodyPart:"Calves",     equipment:"Machine" },
+  { name:"Leg Press Calf Raise",       bodyPart:"Calves",     equipment:"Machine" },
+  { name:"Single-Leg DB Calf Raise",   bodyPart:"Calves",     equipment:"Dumbbell" },
+
+  // ── Core ──
+  { name:"Plank",                      bodyPart:"Core",       equipment:"Bodyweight" },
+  { name:"Neck Planks",                bodyPart:"Core",       equipment:"Bodyweight" },
+  { name:"Hanging Leg Raise",          bodyPart:"Core",       equipment:"Bodyweight" },
+  { name:"Cable Crunch",               bodyPart:"Core",       equipment:"Cable" },
+  { name:"Machine Crunches",           bodyPart:"Core",       equipment:"Machine" },
+  { name:"Russian Twist",              bodyPart:"Core",       equipment:"Bodyweight" },
+  { name:"Ab Wheel Rollout",           bodyPart:"Core",       equipment:"Wheel" },
+  { name:"Pallof Press",               bodyPart:"Core",       equipment:"Cable" },
+
+  // ── Cardio ──
+  { name:"Treadmill Walk",             bodyPart:"Cardio",     equipment:"Machine" },
+  { name:"Treadmill Run",              bodyPart:"Cardio",     equipment:"Machine" },
+  { name:"Stationary Bike",            bodyPart:"Cardio",     equipment:"Machine" },
+  { name:"Rowing Machine",             bodyPart:"Cardio",     equipment:"Machine" },
+  { name:"Stair Climber",              bodyPart:"Cardio",     equipment:"Machine" },
+  { name:"Jump Rope",                  bodyPart:"Cardio",     equipment:"Bodyweight" },
+];
+
+// ═══════════════════════════════════════════════════════════════════
+// FILE: theme.js
+// ═══════════════════════════════════════════════════════════════════
+
+const c = {
+  bg:"#0a0a0a", card:"#161616", cardBorder:"#2a2a2a",
+  inputBg:"#1e1e1e", inputBorder:"#3a3a3a",
+  tp:"#ffffff", ts:"#c0c0c0", tm:"#888888", div:"#2a2a2a",
+  accent:"#A78BFA", success:"#34D399", warning:"#FCD34D", danger:"#F87171",
+};
+
+const sx = {
+  card: { background:c.card, border:`1px solid ${c.cardBorder}`, borderRadius:14 },
+  cardSm: { background:c.card, border:`1px solid ${c.cardBorder}`, borderRadius:12 },
+  input: { padding:"9px 12px", border:`1px solid ${c.inputBorder}`, borderRadius:8, background:c.inputBg, color:c.tp, fontSize:15, outline:"none" },
+  inputSm: { padding:"6px 10px", border:`1px solid ${c.inputBorder}`, borderRadius:8, background:c.inputBg, color:c.tp, fontSize:12, outline:"none" },
+  btnGhost: { background:"none", border:"none", color:c.tm, cursor:"pointer", padding:0 },
+  sectionLabel: { fontSize:10, color:c.ts, fontWeight:700, letterSpacing:0.8, textTransform:"uppercase", marginBottom:8 },
+  pill: (color) => ({ fontSize:10, fontWeight:700, color, background:color+"25", borderRadius:5, padding:"2px 7px" }),
+  stickyHeader: { background:"#111", borderBottom:`1px solid ${c.cardBorder}`, padding:"14px 16px 10px", position:"sticky", top:0, zIndex:10 },
+  modalBackdrop: { position:"fixed", inset:0, background:"rgba(0,0,0,0.85)", zIndex:1000, display:"flex", flexDirection:"column", justifyContent:"flex-end" },
+  modalSheet: { background:"#161616", borderRadius:"20px 20px 0 0", border:"1px solid #2a2a2a", padding:"20px 20px 40px" },
+  pickerCancel: { padding:"7px 16px", borderRadius:10, border:`1px solid ${c.inputBorder}`, background:"transparent", color:c.ts, fontSize:13, fontWeight:600, cursor:"pointer" },
+  pickerDone: (color) => ({ padding:"7px 20px", borderRadius:10, border:"none", background:color, color:"#000", fontSize:13, fontWeight:700, cursor:"pointer" }),
+  headerBtn: (color, active) => ({
+    padding:"6px 11px", borderRadius:8,
+    border:`1.5px solid ${active ? color : c.inputBorder}`,
+    background: active ? color+"20" : "transparent",
+    color: active ? color : c.ts,
+    fontSize:11, fontWeight:700, cursor:"pointer",
+  }),
+};
+
+// ═══════════════════════════════════════════════════════════════════
+// FILE: utils.js
+// ═══════════════════════════════════════════════════════════════════
+
+const todayDay = () => { const d = new Date().getDay(); const map = [6,0,1,2,3,4,5]; return DAYS[map[d]] || "MON"; };
+const dateKey = (y,m,d) => `${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+const parseDateKey = (k) => { const [y,m,d] = k.split("-").map(Number); return { y, m: m-1, d }; };
+const getDOWFromKey = (k) => { const { y,m,d } = parseDateKey(k); const day = new Date(y,m,d).getDay(); const map = [6,0,1,2,3,4,5]; return DAYS[map[day]] || "MON"; };
+const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
+const haptic = (ms = 10) => { try { navigator.vibrate?.(ms); } catch {} };
+
+// ── ISO week helpers (Mon-anchored, matching DAYS order) ────────
+// Week keys look like "2026-W18". Algorithm: ISO 8601 — week 1 contains the year's first Thursday.
+function getISOWeek(date) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  // Thursday in current week determines the year
+  const dayNum = (d.getUTCDay() + 6) % 7; // Mon=0..Sun=6
+  d.setUTCDate(d.getUTCDate() - dayNum + 3);
+  const firstThursday = new Date(Date.UTC(d.getUTCFullYear(), 0, 4));
+  const diff = (d - firstThursday) / 86400000;
+  const week = 1 + Math.round((diff - 3 + ((firstThursday.getUTCDay() + 6) % 7)) / 7);
+  return { year: d.getUTCFullYear(), week };
+}
+const weekKey = ({year, week}) => `${year}-W${String(week).padStart(2,"0")}`;
+const getWeekKeyFromDate = (date) => weekKey(getISOWeek(date));
+const getWeekKeyFromDateKey = (dk) => { const {y,m,d} = parseDateKey(dk); return getWeekKeyFromDate(new Date(y,m,d)); };
+
+// Monday of the ISO week (returned as a {y,m,d})
+function mondayOfISOWeek(year, week) {
+  const jan4 = new Date(Date.UTC(year, 0, 4));
+  const jan4Dow = (jan4.getUTCDay() + 6) % 7; // Mon=0
+  const mondayWeek1 = new Date(Date.UTC(year, 0, 4 - jan4Dow));
+  const monday = new Date(mondayWeek1);
+  monday.setUTCDate(mondayWeek1.getUTCDate() + (week - 1) * 7);
+  return { y: monday.getUTCFullYear(), m: monday.getUTCMonth(), d: monday.getUTCDate() };
+}
+function parseWeekKey(wk) {
+  const [yStr, wStr] = wk.split("-W");
+  return { year: parseInt(yStr,10), week: parseInt(wStr,10) };
+}
+// All 7 dateKeys (Mon..Sun) for a given week key
+function weekDateKeys(wk) {
+  const { year, week } = parseWeekKey(wk);
+  const mon = mondayOfISOWeek(year, week);
+  const start = new Date(Date.UTC(mon.y, mon.m, mon.d));
+  const out = [];
+  for (let i = 0; i < 7; i++) {
+    const dt = new Date(start);
+    dt.setUTCDate(start.getUTCDate() + i);
+    out.push(dateKey(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate()));
+  }
+  return out;
+}
+// Adjacent weeks
+function shiftWeekKey(wk, delta) {
+  const { year, week } = parseWeekKey(wk);
+  const mon = mondayOfISOWeek(year, week);
+  const dt = new Date(Date.UTC(mon.y, mon.m, mon.d + delta * 7));
+  return getWeekKeyFromDate(new Date(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate()));
+}
+// Human-friendly week label, e.g. "Apr 27 – May 3, 2026"
+function formatWeekRange(wk) {
+  const keys = weekDateKeys(wk);
+  const a = parseDateKey(keys[0]), b = parseDateKey(keys[6]);
+  const fmt = (p) => `${MONTHS[p.m]} ${p.d}`;
+  return a.y === b.y
+    ? `${fmt(a)} – ${fmt(b)}, ${a.y}`
+    : `${fmt(a)}, ${a.y} – ${fmt(b)}, ${b.y}`;
+}
+// Compact version for tight UI — drops the year if it matches the current year
+function formatWeekRangeCompact(wk) {
+  const keys = weekDateKeys(wk);
+  const a = parseDateKey(keys[0]), b = parseDateKey(keys[6]);
+  const fmt = (p) => `${MONTHS[p.m]} ${p.d}`;
+  const currentYear = new Date().getFullYear();
+  if (a.y === b.y && a.y === currentYear) return `${fmt(a)} – ${fmt(b)}`;
+  return formatWeekRange(wk);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FILE: storage.js — persistence + schema migrations
+// ═══════════════════════════════════════════════════════════════════
+//
+// Storage shape (v3):
+// {
+//   __version: 3,
+//   weeks: {
+//     "2026-W18": { plan: { MON:[{name,target}], TUE:[...], ..., SUN:[...] } }
+//   },
+//   days: {
+//     "2026-05-01": {
+//       exercises: { "Hack Squats": { sets:[...], tech:null, supersetWith:null } },
+//       measurements: { bodyWeight:"75.5", chest:"100", ... }
+//     }
+//   }
+// }
+//
+// Notes:
+// - A week without an entry in `weeks` falls back to the default WORKOUT_PLAN.
+// - A week with an explicit plan ({ MON:[], TUE:[], ... }) shows whatever the user put there
+//   (including an empty list = blank week, no exercises planned).
+//
+// v2 shape (no weeks field):
+// { __version: 2, days: { "2026-05-01": { exercises:{}, measurements:{} } } }
+//
+// v1 (no __version): { "2026-05-01": { "Hack Squats": {...}, "__measurements": {...} } }
+
+function migrateV1ToV2(raw) {
+  if (raw && typeof raw === "object" && !Array.isArray(raw) && (raw.__version === 2 || raw.__version === 3)) {
+    if (raw.days && typeof raw.days === "object" && !Array.isArray(raw.days)) return raw;
+    return { __version: 2, days: {} };
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { __version: 2, days: {} };
+  }
+
+  const days = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (k === "__version" || k === "days" || k === "weeks") continue;
+    if (!v || typeof v !== "object" || Array.isArray(v)) continue;
+    const day = { exercises: {}, measurements: {} };
+    for (const [exName, exData] of Object.entries(v)) {
+      if (exName === "__measurements") {
+        if (exData && typeof exData === "object" && !Array.isArray(exData)) {
+          day.measurements = { ...exData };
+        }
+      } else if (exData && typeof exData === "object" && !Array.isArray(exData)) {
+        day.exercises[exName] = {
+          sets: Array.isArray(exData.sets) ? exData.sets : [],
+          tech: exData.tech ?? null,
+          supersetWith: exData.supersetWith ?? null,
+        };
+      }
+    }
+    days[k] = day;
+  }
+  return { __version: 2, days };
+}
+
+function migrateV2ToV3(v2) {
+  if (v2 && v2.__version === 3) return v2;
+  return {
+    __version: 3,
+    weeks: (v2 && typeof v2.weeks === "object" && !Array.isArray(v2.weeks)) ? v2.weeks : {},
+    days: (v2 && typeof v2.days === "object" && !Array.isArray(v2.days)) ? v2.days : {},
+  };
+}
+
+function migrateToLatest(raw) {
+  // chain migrations: any → v2 → v3
+  return migrateV2ToV3(migrateV1ToV2(raw));
+}
+
+async function loadStore() {
+  try {
+    if (typeof window === "undefined" || !window.storage) {
+      console.warn("window.storage unavailable; running in-memory only");
+      return { __version: SCHEMA_VERSION, weeks: {}, days: {} };
+    }
+    let r = null;
+    try { r = await window.storage.get(STORAGE_KEY); }
+    catch (getErr) {
+      console.log("storage.get threw (treating as empty):", getErr?.message);
+      return { __version: SCHEMA_VERSION, weeks: {}, days: {} };
+    }
+    if (!r || !r.value) return { __version: SCHEMA_VERSION, weeks: {}, days: {} };
+
+    let raw;
+    try { raw = JSON.parse(r.value); }
+    catch (parseErr) {
+      console.error("loadStore: JSON parse failed", parseErr);
+      return null;
+    }
+
+    const migrated = migrateToLatest(raw);
+    // Persist migration if shape changed
+    if (!raw || typeof raw !== "object" || raw.__version !== SCHEMA_VERSION) {
+      try { await window.storage.set(STORAGE_KEY, JSON.stringify(migrated)); }
+      catch (saveErr) { console.warn("migration save failed (continuing):", saveErr); }
+    }
+    return migrated;
+  } catch (err) {
+    console.error("loadStore failed:", err);
+    return null;
+  }
+}
+
+async function saveStore(store) {
+  try {
+    if (typeof window === "undefined" || !window.storage) return;
+    await window.storage.set(STORAGE_KEY, JSON.stringify(store));
+  } catch (err) { console.error("saveStore failed:", err); }
+}
+
+async function clearStore() {
+  try {
+    if (typeof window === "undefined" || !window.storage) return;
+    await window.storage.delete?.(STORAGE_KEY);
+  } catch {}
+}
+
+const getDay = (store, dk) => store.days[dk] || { exercises: {}, measurements: {} };
+const getExercise = (store, dk, name) => getDay(store, dk).exercises[name] || { sets:[], tech:null, supersetWith:null };
+const getMeasurement = (store, dk, key) => getDay(store, dk).measurements[key] ?? "";
+
+// Plan resolution: explicit week plan if present, else fall back to default WORKOUT_PLAN
+function getPlanForWeek(store, wk) {
+  const weekEntry = store.weeks?.[wk];
+  if (weekEntry && weekEntry.plan && typeof weekEntry.plan === "object") return weekEntry.plan;
+  return WORKOUT_PLAN; // default fixed plan
+}
+function getPlanForDate(store, dk) {
+  return getPlanForWeek(store, getWeekKeyFromDateKey(dk));
+}
+function getDayPlan(store, dk) {
+  const plan = getPlanForDate(store, dk);
+  const dow = getDOWFromKey(dk);
+  return plan[dow] || [];
+}
+function isWeekCustomized(store, wk) {
+  return !!store.weeks?.[wk]?.plan;
+}
+
+// Per-day focus label: explicit week override → DAY_FOCUS default
+function getDayFocus(store, wk, dow) {
+  const override = store.weeks?.[wk]?.focus?.[dow];
+  if (typeof override === "string") return override; // explicit value (incl. empty string)
+  return DAY_FOCUS[dow] || "";
+}
+
+// Per-day rest flag: explicit week override → false (default plan never marks days as rest;
+// "rest day" was previously implicit via empty-exercises-list). Now it's an explicit flag.
+function isDayRest(store, wk, dow) {
+  const override = store.weeks?.[wk]?.rest?.[dow];
+  if (typeof override === "boolean") return override;
+  // Default: a day is implicitly "rest-ish" if the default plan has no exercises (e.g. SUN)
+  return (WORKOUT_PLAN[dow] || []).length === 0;
+}
+
+function dayHasData(day) {
+  if (!day) return false;
+  if (Object.values(day.exercises || {}).some(ex => ex.sets?.length > 0)) return true;
+  if (Object.values(day.measurements || {}).some(v => v !== "" && v != null)) return true;
+  return false;
+}
+
+function dayTotalVolume(day) {
+  if (!day) return 0;
+  return Object.values(day.exercises || {}).reduce(
+    (a, ex) => a + (ex.sets || []).reduce((b, s) => b + (num(s.weight) * num(s.reps)), 0),
+    0
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FILE: components/ScrollPicker.jsx
+// ═══════════════════════════════════════════════════════════════════
+
+function ScrollPicker({ values, value, onChange, width, label }) {
+  const ref = useRef(null);
+  const itemH = 40;
+  const padCount = 2;
+
+  useEffect(() => {
+    if (!ref.current) return;
+    const idx = values.indexOf(value);
+    if (idx >= 0) ref.current.scrollTop = idx * itemH;
+  }, [value, values]);
+
+  const handleScroll = () => {
+    if (!ref.current) return;
+    const idx = Math.round(ref.current.scrollTop / itemH);
+    const clamped = Math.max(0, Math.min(idx, values.length - 1));
+    if (values[clamped] !== value) onChange(values[clamped]);
+  };
+
+  const allItems = [...Array(padCount).fill(null), ...values, ...Array(padCount).fill(null)];
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4 }}>
+      <div style={{ fontSize:10, color:c.tm, fontWeight:700, letterSpacing:0.5, textTransform:"uppercase" }}>{label}</div>
+      <div style={{ position:"relative", width, height:itemH*(padCount*2+1), overflow:"hidden", borderRadius:12, background:c.inputBg, border:`1px solid ${c.inputBorder}` }}>
+        <div style={{ position:"absolute", top:"50%", left:0, right:0, height:itemH, transform:"translateY(-50%)", background:"#ffffff12", borderTop:"1px solid #ffffff20", borderBottom:"1px solid #ffffff20", pointerEvents:"none", zIndex:2 }}/>
+        <div style={{ position:"absolute", top:0, left:0, right:0, height:itemH*1.5, background:`linear-gradient(to bottom, ${c.inputBg}, transparent)`, pointerEvents:"none", zIndex:3 }}/>
+        <div style={{ position:"absolute", bottom:0, left:0, right:0, height:itemH*1.5, background:`linear-gradient(to top, ${c.inputBg}, transparent)`, pointerEvents:"none", zIndex:3 }}/>
+        <div ref={ref} onScroll={handleScroll} style={{ height:"100%", overflowY:"scroll", scrollSnapType:"y mandatory", WebkitOverflowScrolling:"touch", scrollbarWidth:"none", msOverflowStyle:"none" }}>
+          {allItems.map((v, i) => (
+            <div key={i} onClick={() => v !== null && onChange(v)} style={{
+              height:itemH, display:"flex", alignItems:"center", justifyContent:"center",
+              scrollSnapAlign:"start", userSelect:"none", cursor: v !== null ? "pointer" : "default",
+              fontSize: v === value ? 18 : 14, fontWeight: v === value ? 700 : 400,
+              color: v === null ? "transparent" : v === value ? "#ffffff" : c.ts,
+            }}>
+              {v !== null ? v : "·"}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FILE: components/PickerModal.jsx
+// ═══════════════════════════════════════════════════════════════════
+
+const WEIGHT_VALS = (() => { const a = []; for (let w = 0; w <= 250; w += 5) a.push(w); return a; })();
+const FINE_VALS = [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5];
+const REPS_VALS = Array.from({ length: 30 }, (_, i) => i + 1);
+const RIR_VALS = [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];
+// For the Add Exercise modal:
+const TARGET_REPS_VALS = Array.from({ length: 50 }, (_, i) => i + 1);   // 1–50
+const SETS_VALS = Array.from({ length: 21 }, (_, i) => i);              // 0–20
+
+function PickerModal({ field, currentValue, onConfirm, onClose, color }) {
+  const parseW = (v) => {
+    if (v === "" || v == null) return { base:0, fine:0 };
+    const n = num(v); const base = Math.floor(n / 5) * 5;
+    return { base, fine: parseFloat((n - base).toFixed(1)) };
+  };
+  const initW = parseW(currentValue);
+  const [wBase, setWBase] = useState(initW.base);
+  const [wFine, setWFine] = useState(initW.fine);
+  const [reps, setReps] = useState(parseInt(currentValue) || 1);
+  const [rir, setRir] = useState(currentValue === "" || currentValue == null ? null : parseFloat(currentValue));
+
+  const confirm = () => {
+    haptic(8);
+    if (field === "weight") onConfirm(String(parseFloat((wBase + wFine).toFixed(1))));
+    else if (field === "reps") onConfirm(String(reps));
+    else onConfirm(rir == null ? "" : String(rir));
+    onClose();
+  };
+
+  const title = field === "weight" ? "Weight (kg)" : field === "reps" ? "Reps" : "Reps in Reserve";
+
+  return (
+    <div onClick={e => { if (e.target === e.currentTarget) onClose(); }} style={sx.modalBackdrop}>
+      <div style={sx.modalSheet}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
+          <div style={{ fontSize:15, fontWeight:700, color:c.tp }}>{title}</div>
+          <div style={{ display:"flex", gap:10 }}>
+            <button onClick={onClose} style={sx.pickerCancel}>Cancel</button>
+            <button onClick={confirm} style={sx.pickerDone(color)}>Done</button>
+          </div>
+        </div>
+        {field === "weight" && (
+          <div>
+            <div style={{ display:"flex", justifyContent:"center", gap:12, marginBottom:12 }}>
+              <ScrollPicker values={WEIGHT_VALS} value={wBase} onChange={setWBase} width={100} label="Base (5kg)" />
+              <div style={{ display:"flex", alignItems:"center", fontSize:20, color:c.ts, paddingTop:28 }}>+</div>
+              <ScrollPicker values={FINE_VALS} value={wFine} onChange={setWFine} width={80} label="Fine (0.5kg)" />
+            </div>
+            <div style={{ textAlign:"center", fontSize:26, fontWeight:700, color }}>{parseFloat((wBase + wFine).toFixed(1))} kg</div>
+          </div>
+        )}
+        {field === "reps" && (
+          <div>
+            <div style={{ display:"flex", justifyContent:"center", marginBottom:12 }}>
+              <ScrollPicker values={REPS_VALS} value={reps} onChange={setReps} width={120} label="Reps" />
+            </div>
+            <div style={{ textAlign:"center", fontSize:26, fontWeight:700, color }}>{reps} reps</div>
+          </div>
+        )}
+        {field === "rir" && (
+          <div>
+            <div style={{ display:"flex", justifyContent:"center", marginBottom:12 }}>
+              <ScrollPicker values={RIR_VALS} value={rir == null ? 2 : rir} onChange={setRir} width={120} label="0 = failure" />
+            </div>
+            <div style={{ textAlign:"center", fontSize:26, fontWeight:700, color }}>
+              {rir == null ? <span style={{ color:c.tm }}>Not set</span> : `RIR ${rir}`}
+            </div>
+            {rir == null && <div style={{ textAlign:"center", fontSize:11, color:c.tm, marginTop:6 }}>Scroll to set · 0 = couldn't do another rep</div>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FILE: components/RestTimer.jsx
+// ═══════════════════════════════════════════════════════════════════
+
+function RestTimer({ onClose }) {
+  const [target, setTarget] = useState(120);
+  const [remaining, setRemaining] = useState(120);
+  const [running, setRunning] = useState(true);
+  const startedAt = useRef(Date.now());
+  const initial = useRef(120);
+
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startedAt.current) / 1000);
+      const left = initial.current - elapsed;
+      if (left <= 0) {
+        setRemaining(0); setRunning(false);
+        haptic([100, 50, 100, 50, 100]);
+        clearInterval(id);
+      } else setRemaining(left);
+    }, 250);
+    return () => clearInterval(id);
+  }, [running]);
+
+  const pickPreset = (s) => {
+    setTarget(s); initial.current = s; setRemaining(s);
+    startedAt.current = Date.now(); setRunning(true); haptic(8);
+  };
+
+  const fmt = (s) => `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`;
+  const pct = remaining / target;
+
+  return (
+    <div style={{
+      position:"fixed", bottom:14, left:14, right:14, zIndex:50,
+      ...sx.card, padding:"12px 14px", maxWidth:452, margin:"0 auto",
+      boxShadow:"0 4px 20px rgba(0,0,0,0.5)",
+    }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+        <div style={{ display:"flex", alignItems:"baseline", gap:8 }}>
+          <span style={{ fontSize:22, fontWeight:700, color: remaining === 0 ? c.success : c.tp, fontVariantNumeric:"tabular-nums" }}>{fmt(remaining)}</span>
+          <span style={{ fontSize:11, color:c.tm, fontWeight:600 }}>
+            {remaining === 0 ? "READY" : running ? "rest" : "paused"}
+          </span>
+        </div>
+        <button onClick={onClose} style={{ ...sx.btnGhost, fontSize:18, padding:"0 4px", lineHeight:1 }}>×</button>
+      </div>
+      <div style={{ height:3, background:"#2a2a2a", borderRadius:4, overflow:"hidden", marginBottom:10 }}>
+        <div style={{ height:"100%", width:`${Math.max(0, pct*100)}%`, background: remaining === 0 ? c.success : c.accent, transition:"width 0.25s linear", borderRadius:4 }}/>
+      </div>
+      <div style={{ display:"flex", gap:5 }}>
+        {[60, 90, 120, 180].map(s => (
+          <button key={s} onClick={() => pickPreset(s)} style={{
+            flex:1, padding:"6px 0", borderRadius:8,
+            border:`1px solid ${target === s ? c.accent : c.inputBorder}`,
+            background: target === s ? c.accent+"20" : "transparent",
+            color: target === s ? c.accent : c.ts,
+            fontSize:11, fontWeight:700, cursor:"pointer",
+          }}>{s < 60 ? `${s}s` : `${s/60}m`}</button>
+        ))}
+        <button onClick={() => { setRunning(r => !r); haptic(8); }} style={{
+          flex:1, padding:"6px 0", borderRadius:8,
+          border:`1px solid ${c.inputBorder}`, background:c.inputBg,
+          color:c.tp, fontSize:11, fontWeight:700, cursor:"pointer",
+        }}>{running ? "‖" : "▶"}</button>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FILE: components/SetRow.jsx
+// ═══════════════════════════════════════════════════════════════════
+
+const SET_ROW_GRID = "32px 1fr 1fr 1fr 38px 26px";
+
+function SetRow({ set, idx, onUpdate, onRemove, defaultTech, color, onSetCompleted }) {
+  const [picker, setPicker] = useState(null);
+  const [pulse, setPulse] = useState(false);
+  const tech = set.tech || defaultTech || null;
+  const techObj = TECH_BY_KEY[tech];
+  const completed = !!set.done;
+
+  const toggleDone = () => {
+    const newDone = !set.done;
+    onUpdate({ ...set, done: newDone });
+    if (newDone) {
+      haptic(15); setPulse(true); setTimeout(() => setPulse(false), 400);
+      onSetCompleted?.();
+    } else haptic(8);
+  };
+
+  const fields = [
+    { f:"weight", val:set.weight, unit:"kg" },
+    { f:"reps",   val:set.reps,   unit:"rp" },
+    { f:"rir",    val:set.rir,    unit:""    },
+  ];
+
+  return (
+    <>
+      <div style={{
+        display:"grid", gridTemplateColumns:SET_ROW_GRID, gap:3, alignItems:"center", marginBottom:6,
+        padding:"4px 2px", borderRadius:10,
+        background: pulse ? color + "30" : completed ? color + "12" : "transparent",
+        border: completed ? `1px solid ${color}35` : "1px solid transparent",
+        transition:"all 0.3s",
+      }}>
+        <button onClick={toggleDone} style={{
+          width:26, height:26, borderRadius:"50%",
+          border:`2px solid ${completed ? color : "#3a3a3a"}`,
+          background: completed ? color : "transparent",
+          display:"flex", alignItems:"center", justifyContent:"center",
+          cursor:"pointer", padding:0, margin:"0 auto", flexShrink:0,
+          transition:"all 0.2s", transform: pulse ? "scale(1.15)" : "scale(1)",
+        }}>
+          {completed
+            ? <span style={{ fontSize:11, color:"#000", fontWeight:900, lineHeight:1 }}>✓</span>
+            : <span style={{ fontSize:10, color:c.tm, fontWeight:700, lineHeight:1 }}>{idx+1}</span>}
+        </button>
+
+        {fields.map(({ f, val, unit }) => {
+          const hasVal = val != null && val !== "";
+          return (
+            <button key={f} onClick={() => setPicker(f)} style={{
+              padding:"10px 4px", borderRadius:10,
+              border: `1px solid ${hasVal ? color + "60" : c.inputBorder}`,
+              background: hasVal ? color + "12" : c.inputBg,
+              color: hasVal ? color : c.tm,
+              fontSize:13, fontWeight: hasVal ? 700 : 400,
+              cursor:"pointer", textAlign:"center",
+            }}>
+              {hasVal ? val : "—"}
+              {unit && <span style={{ fontSize:9, opacity:0.7 }}> {unit}</span>}
+            </button>
+          );
+        })}
+
+        <button onClick={() => setPicker(picker === "tech" ? null : "tech")} style={{
+          padding:"7px 3px", borderRadius:10,
+          border: `1px solid ${techObj ? techObj.color + "60" : c.inputBorder}`,
+          background: techObj ? techObj.color + "15" : c.inputBg,
+          color: techObj ? techObj.color : c.tm,
+          fontSize:9, fontWeight:700, cursor:"pointer", textAlign:"center",
+        }}>{techObj ? techObj.short : "+T"}</button>
+
+        <button onClick={() => { if (confirm("Remove set " + (idx+1) + "?")) onRemove(); }}
+          style={{ ...sx.btnGhost, fontSize:15, lineHeight:1 }}>×</button>
+      </div>
+
+      {picker === "tech" && (
+        <div style={{ background:c.inputBg, border:`1px solid ${c.inputBorder}`, borderRadius:10, padding:"10px 12px", marginBottom:8 }}>
+          <div style={{ fontSize:10, color:c.ts, fontWeight:600, marginBottom:7 }}>Technique for S{idx+1}</div>
+          <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
+            <button onClick={() => { onUpdate({ ...set, tech:null }); setPicker(null); }}
+              style={{ padding:"5px 10px", borderRadius:8, border:`1px solid ${!set.tech ? c.ts : c.inputBorder}`, background:!set.tech ? "#ffffff20" : "transparent", color:!set.tech ? c.tp : c.ts, fontSize:11, fontWeight:600, cursor:"pointer" }}>None</button>
+            {TECHNIQUES.map(t => (
+              <button key={t.key} onClick={() => { onUpdate({ ...set, tech: t.key }); setPicker(null); }}
+                style={{ padding:"5px 10px", borderRadius:8, border:`1.5px solid ${set.tech === t.key ? t.color : c.inputBorder}`, background: set.tech === t.key ? t.color + "25" : "transparent", color: set.tech === t.key ? t.color : c.ts, fontSize:11, fontWeight:700, cursor:"pointer" }}>
+                {t.short}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {(picker === "weight" || picker === "reps" || picker === "rir") && (
+        <PickerModal
+          field={picker} color={color}
+          currentValue={picker === "weight" ? set.weight : picker === "reps" ? set.reps : set.rir}
+          onConfirm={v => {
+            if (picker === "weight") onUpdate({ ...set, weight: v });
+            else if (picker === "reps") onUpdate({ ...set, reps: v });
+            else onUpdate({ ...set, rir: v });
+          }}
+          onClose={() => setPicker(null)}
+        />
+      )}
+    </>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FILE: components/ExerciseCard.jsx
+// ═══════════════════════════════════════════════════════════════════
+
+function ExerciseCard({ ex, data, onUpdate, color, prevData, allExercises, onSetCompleted, onRemove }) {
+  const [showConfig, setShowConfig] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const sets = data.sets || [];
+  const tech = data.tech || null;
+  const supersetWith = data.supersetWith || null;
+
+  const addSet = () => {
+    haptic(8);
+    onUpdate({ ...data, sets: [...sets, { weight:"", reps:"", rir:"", tech:null, done:false }] });
+    if (!expanded) setExpanded(true); // auto-expand when adding
+  };
+  const updateSet = (i, ns) => { const a = [...sets]; a[i] = ns; onUpdate({ ...data, sets:a }); };
+  const removeSet = i => onUpdate({ ...data, sets: sets.filter((_, j) => j !== i) });
+
+  const vol = sets.reduce((a, s) => a + (num(s.weight) * num(s.reps)), 0);
+  const prevBest = (prevData?.sets||[]).reduce((a, s) => Math.max(a, num(s.weight)), 0);
+  const activeTech = TECH_BY_KEY[tech];
+  const completedSets = sets.filter(s => s.done).length;
+  const totalSets = sets.length;
+  const allDone = totalSets > 0 && completedSets === totalSets;
+
+  // Default expanded if there's anything to look at; auto-collapsed when fully done.
+  const [expanded, setExpanded] = useState(() => totalSets === 0 || !allDone);
+
+  return (
+    <div style={{
+      ...sx.card, overflow:"visible", marginBottom:10,
+      border: allDone ? `1px solid ${color}60` : `1px solid ${c.cardBorder}`,
+      transition:"border 0.3s",
+    }}>
+      <div style={{ borderLeft:`3px solid ${allDone ? color : "#3a3a3a"}`, padding:"10px 12px", borderRadius:"14px 14px 0 0", transition:"border 0.3s" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:6 }}>
+          {/* Left: name + pills + meta */}
+          <button
+            onClick={() => { setExpanded(e => !e); haptic(3); }}
+            title={expanded ? "Collapse" : "Expand"}
+            style={{
+              flex:1, minWidth:0, background:"none", border:"none", padding:0,
+              cursor:"pointer", textAlign:"left", display:"flex", flexDirection:"column", gap:3,
+              fontFamily:"inherit",
+            }}>
+            <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+              <span style={{ fontSize:10, color:c.tm, marginRight:1 }}>{expanded ? "▾" : "▸"}</span>
+              <span style={{ fontWeight:700, fontSize:14, color: allDone ? color : c.tp }}>{ex.name}</span>
+              {totalSets > 0 && (
+                <span style={{ fontSize:10, fontWeight:700, color: allDone ? color : completedSets > 0 ? c.warning : c.tm }}>
+                  {completedSets}/{totalSets}
+                </span>
+              )}
+              {allDone && <span style={{ ...sx.pill(color), border:`1px solid ${color}50` }}>✓</span>}
+              {!allDone && activeTech && <span style={{ ...sx.pill(activeTech.color), border:`1px solid ${activeTech.color}50` }}>{activeTech.short}</span>}
+              {supersetWith && <span style={{ ...sx.pill(color), border:`1px solid ${color}50` }}>SS</span>}
+            </div>
+            {(prevBest > 0 || vol > 0) && (
+              <div style={{ display:"flex", gap:10, alignItems:"center", flexWrap:"wrap" }}>
+                {prevBest > 0 && <span style={{ fontSize:10, color:c.warning }}>↑ Prev {prevBest}kg</span>}
+                {vol > 0 && <span style={{ fontSize:10, color, marginLeft:"auto", fontWeight:700 }} title="kg × reps">{Math.round(vol).toLocaleString()} kg·rp</span>}
+              </div>
+            )}
+            {totalSets > 0 && (
+              <div style={{ height:2, background:"#2a2a2a", borderRadius:4, overflow:"hidden" }}>
+                <div style={{ height:"100%", width:`${(completedSets/totalSets)*100}%`, background:color, borderRadius:4, transition:"width 0.3s ease" }}/>
+              </div>
+            )}
+          </button>
+
+          {/* Right: action buttons */}
+          <div style={{ display:"flex", gap:5, alignItems:"center", flexShrink:0 }}>
+            <button
+              onClick={addSet}
+              title="Add set"
+              style={{
+                background: color+"15", border:`1px solid ${color}50`,
+                borderRadius:6, cursor:"pointer", color,
+                fontSize:14, fontWeight:900, padding:"3px 9px", lineHeight:1,
+              }}
+            >+</button>
+            {onRemove && (
+              confirmRemove ? (
+                <div style={{ display:"flex", gap:3, alignItems:"center" }}>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onRemove(); setConfirmRemove(false); haptic(15); }}
+                    title="Confirm removal"
+                    style={{
+                      background:c.danger, border:"none", borderRadius:6,
+                      cursor:"pointer", color:"#000",
+                      fontSize:11, fontWeight:900, padding:"3px 7px", lineHeight:1,
+                    }}
+                  >✓</button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setConfirmRemove(false); }}
+                    title="Cancel"
+                    style={{
+                      background:"none", border:`1px solid ${c.inputBorder}`,
+                      borderRadius:6, cursor:"pointer", color:c.ts,
+                      fontSize:11, fontWeight:700, padding:"2px 7px", lineHeight:1,
+                    }}
+                  >✗</button>
+                </div>
+              ) : (
+                <button
+                  onClick={(e) => { e.stopPropagation(); setConfirmRemove(true); haptic(8); }}
+                  title="Remove"
+                  style={{
+                    background:c.danger+"15", border:`1px solid ${c.danger}50`,
+                    borderRadius:6, cursor:"pointer", color:c.danger,
+                    fontSize:13, fontWeight:700, padding:"2px 7px", lineHeight:1,
+                  }}
+                >×</button>
+              )
+            )}
+            <button onClick={(e) => { e.stopPropagation(); setShowConfig(s => !s); }} style={{ background:showConfig ? "#2a2a2a" : "none", border:showConfig ? `1px solid ${c.inputBorder}` : "none", borderRadius:6, cursor:"pointer", color:showConfig ? c.tp : c.tm, fontSize:12, padding:"4px 6px" }}>⚙</button>
+          </div>
+        </div>
+
+        {showConfig && (
+          <div style={{ marginTop:10, paddingTop:10, borderTop:`1px solid ${c.div}` }}>
+            <div style={{ ...sx.sectionLabel, marginBottom:6 }}>Default technique</div>
+            <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:12 }}>
+              <button onClick={() => onUpdate({ ...data, tech:null })} style={{ padding:"5px 10px", borderRadius:8, border:`1px solid ${!tech ? c.ts : c.inputBorder}`, background:!tech ? "#ffffff20" : "transparent", color:!tech ? c.tp : c.ts, fontSize:11, fontWeight:600, cursor:"pointer" }}>None</button>
+              {TECHNIQUES.map(t => (
+                <button key={t.key} onClick={() => onUpdate({ ...data, tech: t.key === tech ? null : t.key })}
+                  style={{ padding:"5px 10px", borderRadius:8, border:`1.5px solid ${tech === t.key ? t.color : c.inputBorder}`, background: tech === t.key ? t.color + "25" : "transparent", color: tech === t.key ? t.color : c.ts, fontSize:11, fontWeight:700, cursor:"pointer" }}>
+                  {t.short}
+                </button>
+              ))}
+            </div>
+            <div style={{ ...sx.sectionLabel, marginBottom:6 }}>Superset with</div>
+            <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
+              <button onClick={() => onUpdate({ ...data, supersetWith:null })} style={{ padding:"4px 9px", borderRadius:8, border:`1px solid ${!supersetWith ? c.ts : c.inputBorder}`, background:!supersetWith ? "#ffffff20" : "transparent", color:!supersetWith ? c.tp : c.ts, fontSize:10, fontWeight:600, cursor:"pointer" }}>None</button>
+              {allExercises.filter(e => e.name !== ex.name).map(e => (
+                <button key={e.name} onClick={() => onUpdate({ ...data, supersetWith: supersetWith === e.name ? null : e.name })}
+                  style={{ padding:"4px 9px", borderRadius:8, border:`1.5px solid ${supersetWith === e.name ? color : c.inputBorder}`, background: supersetWith === e.name ? color + "25" : "transparent", color: supersetWith === e.name ? color : c.ts, fontSize:10, fontWeight:600, cursor:"pointer" }}>
+                  {e.name.length > 15 ? e.name.slice(0,13) + "…" : e.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {expanded && totalSets > 0 && (
+        <>
+          <div style={{ display:"grid", gridTemplateColumns:SET_ROW_GRID, gap:3, padding:"5px 14px 4px", background:"#111" }}>
+            {["","Weight","Reps","RIR","Tech",""].map((h, i) => (
+              <div key={i} style={{ fontSize:9, color:c.tm, textAlign:"center", letterSpacing:0.5, textTransform:"uppercase", fontWeight:600 }}>{h}</div>
+            ))}
+          </div>
+          <div style={{ padding:"8px 14px 10px" }}>
+            {sets.map((s, i) => (
+              <SetRow key={i} set={s} idx={i} defaultTech={tech} color={color}
+                onUpdate={ns => updateSet(i, ns)} onRemove={() => removeSet(i)}
+                onSetCompleted={onSetCompleted} />
+            ))}
+          </div>
+        </>
+      )}
+
+      {expanded && totalSets === 0 && (
+        <div style={{ padding:"6px 14px 12px" }}>
+          <button onClick={addSet} style={{ width:"100%", padding:"10px", border:`1.5px dashed ${c.inputBorder}`, borderRadius:10, background:"none", color:c.ts, fontSize:12, cursor:"pointer", fontWeight:600 }}>+ Add first set</button>
+        </div>
+      )}
+
+      {supersetWith && (
+        <div style={{ padding:"8px 14px", background:"#111", borderTop:`1px solid ${c.div}`, borderRadius:"0 0 14px 14px" }}>
+          <span style={{ fontSize:11, color, fontWeight:700 }}>Superset → </span>
+          <span style={{ fontSize:11, color:c.ts }}>{supersetWith}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FILE: components/MiniChart.jsx
+// ═══════════════════════════════════════════════════════════════════
+
+function MiniChart({ points, color, height }) {
+  const H = height || 64;
+  if (points.length < 2) return <div style={{ color:c.tm, fontSize:12, textAlign:"center", padding:"16px 0" }}>Need 2+ entries to chart</div>;
+  const W = 320;
+  const vals = points.map(p => p.val);
+  const mn = Math.min(...vals), mx = Math.max(...vals);
+  const range = mx - mn;
+  const flat = range === 0;
+  const px = i => (i / (points.length - 1)) * (W - 24) + 12;
+  const py = v => flat ? H/2 : H - ((v - mn) / range) * (H - 16) - 4;
+  return (
+    <svg width="100%" viewBox={`0 0 ${W} ${H + 22}`} style={{ overflow:"visible" }}>
+      <polyline fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round"
+        points={points.map((p, i) => `${px(i)},${py(p.val)}`).join(" ")} />
+      {points.map((p, i) => (
+        <g key={i}>
+          <circle cx={px(i)} cy={py(p.val)} r={3} fill={color} />
+          {(i === 0 || i === points.length - 1 || points.length <= 5) && (
+            <>
+              <text x={px(i)} y={py(p.val) - 9} textAnchor="middle" fill={color} fontSize={10} fontWeight="700">{p.val}</text>
+              <text x={px(i)} y={H + 19} textAnchor="middle" fill={c.ts} fontSize={9}>{p.date.slice(5)}</text>
+            </>
+          )}
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FILE: components/shared.jsx — DayPills, SectionLabel
+// ═══════════════════════════════════════════════════════════════════
+
+function DayPills({ selected, onSelect, dimRest, weekKey, todayStr, store }) {
+  const dateKeys = weekKey ? weekDateKeys(weekKey) : null;
+  return (
+    <div style={{ display:"flex", gap:5, overflowX:"auto", paddingBottom:4, marginBottom:14, WebkitOverflowScrolling:"touch" }}>
+      {DAYS.map((d, i) => {
+        const c2 = DAY_COLORS[d];
+        const isA = selected === d;
+        // Per-week rest override takes precedence; fall back to default plan emptiness
+        const isRest = (store && weekKey) ? isDayRest(store, weekKey, d) : (WORKOUT_PLAN[d].length === 0);
+        const dim = dimRest && isRest && !isA;
+        const dk = dateKeys ? dateKeys[i] : null;
+        const dayNum = dk ? parseDateKey(dk).d : null;
+        const isToday = dk && todayStr && dk === todayStr;
+        return (
+          <button key={d} onClick={() => { onSelect(d); haptic(5); }} style={{
+            flexShrink:0, padding: dateKeys ? "5px 10px" : "6px 14px",
+            borderRadius: dateKeys ? 12 : 20,
+            border:`1.5px solid ${isA ? c2 : dim ? c.div : c.inputBorder}`,
+            background:isA ? c2+"25" : "transparent",
+            color: isA ? c2 : dim ? c.tm : c.ts,
+            fontSize:11, fontWeight:isA?700:500, cursor:"pointer",
+            opacity: dim ? 0.55 : 1,
+            display:"flex", flexDirection:"column", alignItems:"center", gap:1,
+            minWidth: dateKeys ? 42 : "auto",
+            position:"relative",
+          }}>
+            {dayNum != null && (
+              <span style={{
+                fontSize:14, fontWeight:700, lineHeight:1,
+                color: isA ? c2 : isToday ? c.tp : dim ? c.tm : c.tp,
+              }}>{dayNum}</span>
+            )}
+            <span style={{ fontSize: dateKeys ? 9 : 11, letterSpacing: dateKeys ? 0.5 : 0, opacity: isA ? 1 : 0.85 }}>{d}</span>
+            {isToday && (
+              <span style={{ width:3, height:3, borderRadius:"50%", background:isA ? c2 : c.tp, marginTop:1 }}/>
+            )}
+            {isRest && !isA && dateKeys && (
+              <span style={{ position:"absolute", top:2, right:3, fontSize:8, opacity:0.5 }}>💤</span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+const SectionLabel = ({ children }) => <div style={sx.sectionLabel}>{children}</div>;
+
+// ═══════════════════════════════════════════════════════════════════
+// FILE: components/MiniCalendarDropdown.jsx
+// ═══════════════════════════════════════════════════════════════════
+
+function MiniCalendarDropdown({ store, activeDateKey, todayStr, onPickDate, onClose }) {
+  // Default the month view to the active date's month
+  const [calDate, setCalDate] = useState(() => {
+    const { y, m } = parseDateKey(activeDateKey);
+    return new Date(y, m, 1);
+  });
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const yr = calDate.getFullYear(), mo = calDate.getMonth();
+  const activeWeek = getWeekKeyFromDateKey(activeDateKey);
+
+  const monthDays = useMemo(() => {
+    const days = [];
+    const first = new Date(yr,mo,1).getDay();
+    const offset = first === 0 ? 6 : first - 1;
+    for (let i = 0; i < offset; i++) days.push(null);
+    for (let i = 1; i <= new Date(yr,mo+1,0).getDate(); i++) days.push(i);
+    return days;
+  }, [yr, mo]);
+
+  return (
+    <div style={{
+      ...sx.cardSm, padding:"12px 12px 14px", marginBottom:14,
+      animation:"slideDown 0.2s ease-out",
+    }}>
+      <style>{`@keyframes slideDown { from { opacity:0; transform: translateY(-6px); } to { opacity:1; transform: translateY(0); } }`}</style>
+
+      {/* Month header — tappable to open month/year picker */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+        <button onClick={() => setCalDate(new Date(yr,mo-1,1))} title="Previous month"
+          style={{ background:c.inputBg, border:`1px solid ${c.inputBorder}`, color:c.ts, fontSize:14, cursor:"pointer", padding:"3px 10px", borderRadius:6 }}>‹</button>
+        <button onClick={() => { setPickerOpen(o => !o); haptic(5); }} style={{
+          background:pickerOpen ? c.accent+"20" : "transparent",
+          border:`1px solid ${pickerOpen ? c.accent : "transparent"}`,
+          color:pickerOpen ? c.accent : c.tp, fontWeight:700, fontSize:13,
+          cursor:"pointer", padding:"3px 12px", borderRadius:6,
+          display:"flex", alignItems:"center", gap:5,
+        }}>
+          <span>{MONTHS[mo]} {yr}</span>
+          <span style={{ fontSize:9, transition:"transform 0.2s", transform: pickerOpen ? "rotate(180deg)" : "rotate(0)" }}>▾</span>
+        </button>
+        <button onClick={() => setCalDate(new Date(yr,mo+1,1))} title="Next month"
+          style={{ background:c.inputBg, border:`1px solid ${c.inputBorder}`, color:c.ts, fontSize:14, cursor:"pointer", padding:"3px 10px", borderRadius:6 }}>›</button>
+      </div>
+
+      {pickerOpen ? (
+        // ── Month / year picker grid ──
+        <div style={{ paddingBottom:6 }}>
+          {/* Year selector */}
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10, padding:"0 4px" }}>
+            <button onClick={() => setCalDate(new Date(yr-1, mo, 1))} title="Previous year"
+              style={{ background:c.inputBg, border:`1px solid ${c.inputBorder}`, color:c.ts, fontSize:13, cursor:"pointer", padding:"3px 12px", borderRadius:6 }}>‹ {yr-1}</button>
+            <span style={{ fontSize:14, fontWeight:700, color:c.tp }}>{yr}</span>
+            <button onClick={() => setCalDate(new Date(yr+1, mo, 1))} title="Next year"
+              style={{ background:c.inputBg, border:`1px solid ${c.inputBorder}`, color:c.ts, fontSize:13, cursor:"pointer", padding:"3px 12px", borderRadius:6 }}>{yr+1} ›</button>
+          </div>
+          {/* Month grid 3x4 */}
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:5 }}>
+            {MONTHS.map((monthName, i) => {
+              const isCurrent = i === mo;
+              const isThisMonth = yr === new Date().getFullYear() && i === new Date().getMonth();
+              return (
+                <button key={i}
+                  onClick={() => { setCalDate(new Date(yr, i, 1)); setPickerOpen(false); haptic(5); }}
+                  style={{
+                    padding:"10px 0", borderRadius:8,
+                    border:`1px solid ${isCurrent ? c.accent : isThisMonth ? c.tp+"60" : c.inputBorder}`,
+                    background: isCurrent ? c.accent+"25" : "transparent",
+                    color: isCurrent ? c.accent : isThisMonth ? c.tp : c.ts,
+                    fontSize:12, fontWeight: isCurrent || isThisMonth ? 700 : 500,
+                    cursor:"pointer",
+                  }}>{monthName}</button>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
+        <>
+          {/* Day-of-week header */}
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:2, marginBottom:4 }}>
+            {["M","T","W","T","F","S","S"].map((d,i) => <div key={i} style={{ textAlign:"center", fontSize:9, color:c.tm, padding:"2px 0", fontWeight:600 }}>{d}</div>)}
+          </div>
+          {/* Day grid */}
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:2 }}>
+            {monthDays.map((d, i) => {
+              if (!d) return <div key={i} />;
+              const dk = dateKey(yr,mo,d);
+              const dow = getDOWFromKey(dk);
+              const has = dayHasData(getDay(store, dk));
+              const isToday = dk === todayStr;
+              const inActiveWeek = getWeekKeyFromDateKey(dk) === activeWeek;
+              const c2 = DAY_COLORS[dow];
+              return (
+                <div key={i} onClick={() => onPickDate(dk)}
+                  style={{
+                    aspectRatio:"1", borderRadius:6, cursor:"pointer",
+                    background: inActiveWeek ? c2+"22" : has ? c2+"15" : isToday ? "#1e1e1e" : "transparent",
+                    border: isToday
+                      ? `1.5px solid ${c.tp}`
+                      : inActiveWeek
+                        ? `1px solid ${c2}80`
+                        : has
+                          ? `1px solid ${c2}40`
+                          : `1px solid transparent`,
+                    display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
+                  }}>
+                  <span style={{ fontSize:11, fontWeight:isToday||inActiveWeek?700:500, color:inActiveWeek?c2:has?c2:isToday?c.tp:c.ts }}>{d}</span>
+                  {has && <span style={{ width:3, height:3, borderRadius:"50%", background:c2, marginTop:1 }} />}
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:10, fontSize:10, color:c.tm }}>
+            <button onClick={() => onPickDate(todayStr)} style={{
+              background:"transparent", border:`1px solid ${c.inputBorder}`, color:c.tp,
+              padding:"4px 10px", borderRadius:6, cursor:"pointer", fontSize:11, fontWeight:600,
+            }}>Today</button>
+            <span>active week highlighted</span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FILE: components/AddExerciseModal.jsx
+// ═══════════════════════════════════════════════════════════════════
+
+function AddExerciseModal({ onConfirm, onClose }) {
+  const [name, setName] = useState("");
+  const [target, setTarget] = useState(15);
+  const [plannedSets, setPlannedSets] = useState(3);
+  const [plannedRir, setPlannedRir] = useState(2);
+  const [tech, setTech] = useState(null);
+  const [nameError, setNameError] = useState(false);
+  const [browseOpen, setBrowseOpen] = useState(false);
+  const [browseQuery, setBrowseQuery] = useState("");
+  const [activeBodyPart, setActiveBodyPart] = useState("Chest");
+
+  const submit = () => {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setNameError(true);
+      haptic([20, 40, 20]);
+      setTimeout(() => setNameError(false), 1800);
+      return;
+    }
+    onConfirm({
+      name: trimmed,
+      target: target,
+      plannedSets: plannedSets,
+      plannedRir: plannedRir,
+      tech: tech || null,
+    });
+    onClose();
+  };
+
+  // Filter the database by search query (across all body parts) or by active body part tab.
+  const filteredExercises = useMemo(() => {
+    const q = browseQuery.trim().toLowerCase();
+    if (q) {
+      return EXERCISE_DB.filter(ex =>
+        ex.name.toLowerCase().includes(q) ||
+        ex.bodyPart.toLowerCase().includes(q) ||
+        ex.equipment.toLowerCase().includes(q)
+      );
+    }
+    return EXERCISE_DB.filter(ex => ex.bodyPart === activeBodyPart);
+  }, [browseQuery, activeBodyPart]);
+
+  const pickFromDb = (ex) => {
+    setName(ex.name);
+    setBrowseOpen(false);
+    setBrowseQuery("");
+    setNameError(false);
+    haptic(8);
+  };
+
+  return (
+    <div onClick={e => { if (e.target === e.currentTarget) onClose(); }} style={sx.modalBackdrop}>
+      <div style={{ ...sx.modalSheet, maxHeight:"90vh", overflowY:"auto" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+          <div style={{ fontSize:15, fontWeight:700, color:c.tp }}>Add exercise</div>
+          <div style={{ display:"flex", gap:10 }}>
+            <button onClick={onClose} style={sx.pickerCancel}>Cancel</button>
+            <button onClick={submit} style={sx.pickerDone(c.accent)}>Add</button>
+          </div>
+        </div>
+
+        {/* Browse database trigger */}
+        <button
+          onClick={() => { setBrowseOpen(o => !o); haptic(5); }}
+          style={{
+            width:"100%", padding:"10px 12px", marginBottom:10,
+            border:`1px solid ${browseOpen ? c.accent : c.inputBorder}`,
+            background: browseOpen ? c.accent+"15" : c.inputBg,
+            color: browseOpen ? c.accent : c.ts,
+            borderRadius:10, cursor:"pointer",
+            display:"flex", justifyContent:"space-between", alignItems:"center",
+            fontSize:12, fontWeight:600,
+          }}>
+          <span>📚 Browse exercise database</span>
+          <span style={{ fontSize:10, transition:"transform 0.2s", transform: browseOpen ? "rotate(180deg)" : "rotate(0)" }}>▾</span>
+        </button>
+
+        {browseOpen && (
+          <div style={{ ...sx.cardSm, padding:"10px", marginBottom:12 }}>
+            {/* Search */}
+            <input
+              type="text"
+              value={browseQuery}
+              onChange={e => setBrowseQuery(e.target.value)}
+              placeholder="Search exercises…"
+              style={{ ...sx.input, width:"100%", boxSizing:"border-box", marginBottom:8, padding:"7px 10px", fontSize:13 }}
+            />
+
+            {/* Body part tabs (hidden during search) */}
+            {!browseQuery.trim() && (
+              <div style={{ display:"flex", gap:4, overflowX:"auto", paddingBottom:6, marginBottom:8, WebkitOverflowScrolling:"touch" }}>
+                {BODY_PARTS.map(bp => (
+                  <button key={bp} onClick={() => { setActiveBodyPart(bp); haptic(3); }} style={{
+                    flexShrink:0, padding:"4px 10px", borderRadius:14,
+                    border:`1px solid ${activeBodyPart === bp ? c.accent : c.inputBorder}`,
+                    background: activeBodyPart === bp ? c.accent+"20" : "transparent",
+                    color: activeBodyPart === bp ? c.accent : c.ts,
+                    fontSize:10, fontWeight:700, cursor:"pointer", whiteSpace:"nowrap",
+                  }}>{bp}</button>
+                ))}
+              </div>
+            )}
+
+            {/* Results */}
+            <div style={{ maxHeight:240, overflowY:"auto", display:"flex", flexDirection:"column", gap:3 }}>
+              {filteredExercises.length === 0 ? (
+                <div style={{ textAlign:"center", padding:"16px 0", color:c.tm, fontSize:11 }}>
+                  No matches. Type a name below to add a custom exercise.
+                </div>
+              ) : (
+                filteredExercises.map(ex => (
+                  <button key={ex.name + "/" + ex.equipment} onClick={() => pickFromDb(ex)} style={{
+                    textAlign:"left", padding:"8px 10px", borderRadius:8,
+                    background:c.inputBg, border:`1px solid ${c.inputBorder}`,
+                    cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center",
+                  }}>
+                    <span style={{ fontSize:12, fontWeight:600, color:c.tp }}>{ex.name}</span>
+                    <span style={{ fontSize:9, color:c.tm, fontWeight:600 }}>
+                      {browseQuery.trim() && <span style={{ marginRight:6 }}>{ex.bodyPart}</span>}
+                      <span style={{ background:c.cardBorder, padding:"1px 6px", borderRadius:4 }}>{ex.equipment}</span>
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Name */}
+        <div style={{ marginBottom:16 }}>
+          <div style={{ ...sx.sectionLabel, marginBottom:6, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+            <span>Exercise name</span>
+            {nameError && <span style={{ color:c.danger, fontSize:10, fontWeight:700, textTransform:"none", letterSpacing:0 }}>Required</span>}
+          </div>
+          <input type="text" value={name}
+            onChange={e => { setName(e.target.value); if (nameError) setNameError(false); }}
+            placeholder="Type or pick from database above"
+            onKeyDown={e => { if (e.key === "Enter") submit(); }}
+            style={{
+              ...sx.input, width:"100%", boxSizing:"border-box",
+              border:`1px solid ${nameError ? c.danger : c.inputBorder}`,
+              animation: nameError ? "shake 0.3s" : "none",
+            }} />
+          <style>{`@keyframes shake { 10%,90%{transform:translateX(-2px)} 20%,80%{transform:translateX(3px)} 30%,50%,70%{transform:translateX(-4px)} 40%,60%{transform:translateX(4px)} }`}</style>
+        </div>
+
+        {/* Three scroll pickers: target reps / sets / RIR */}
+        <div style={{ display:"flex", justifyContent:"space-around", gap:8, marginBottom:14 }}>
+          <ScrollPicker values={TARGET_REPS_VALS} value={target} onChange={setTarget} width={88} label="Target reps" />
+          <ScrollPicker values={SETS_VALS} value={plannedSets} onChange={setPlannedSets} width={70} label="Sets" />
+          <ScrollPicker values={RIR_VALS} value={plannedRir} onChange={setPlannedRir} width={70} label="RIR" />
+        </div>
+
+        {/* Technique */}
+        <div>
+          <div style={{ ...sx.sectionLabel, marginBottom:6 }}>Technique</div>
+          <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
+            <button onClick={() => setTech(null)} style={{
+              padding:"6px 11px", borderRadius:8,
+              border:`1px solid ${!tech ? c.ts : c.inputBorder}`,
+              background:!tech ? "#ffffff20" : "transparent",
+              color:!tech ? c.tp : c.ts,
+              fontSize:11, fontWeight:600, cursor:"pointer",
+            }}>None</button>
+            {TECHNIQUES.map(t => (
+              <button key={t.key} onClick={() => setTech(t.key)} style={{
+                padding:"6px 11px", borderRadius:8,
+                border:`1.5px solid ${tech === t.key ? t.color : c.inputBorder}`,
+                background: tech === t.key ? t.color + "25" : "transparent",
+                color: tech === t.key ? t.color : c.ts,
+                fontSize:11, fontWeight:700, cursor:"pointer",
+              }}>{t.short}</button>
+            ))}
+          </div>
+        </div>
+
+        {plannedSets > 0 && (
+          <div style={{ marginTop:14, fontSize:11, color:c.tm, textAlign:"center" }}>
+            {plannedSets} empty {plannedSets === 1 ? "set" : "sets"} · target {target} reps · RIR {plannedRir}
+            {tech ? ` · ${TECH_BY_KEY[tech]?.short}` : ""}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FILE: components/WeekManagerModal.jsx
+// ═══════════════════════════════════════════════════════════════════
+
+function WeekManagerModal({ store, currentWeek, onClose, onResetWeek, onBringForward, onStartBlank, onSetWeek }) {
+  const [step, setStep] = useState("menu"); // menu | reset-confirm | bring-forward | week-picker
+  const [pickedWk, setPickedWk] = useState(currentWeek);
+
+  // Build list of weeks that have data (for the bring-forward picker)
+  const weeksWithData = useMemo(() => {
+    const set = new Set();
+    for (const dk of Object.keys(store.days || {})) {
+      try {
+        if (dayHasData(store.days[dk])) set.add(getWeekKeyFromDateKey(dk));
+      } catch {}
+    }
+    // Also include explicitly customized weeks
+    for (const wk of Object.keys(store.weeks || {})) set.add(wk);
+    return Array.from(set).sort().reverse();
+  }, [store]);
+
+  // ── Step: main menu ──
+  if (step === "menu") {
+    return (
+      <div onClick={e => { if (e.target === e.currentTarget) onClose(); }} style={sx.modalBackdrop}>
+        <div style={sx.modalSheet}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
+            <div style={{ fontSize:15, fontWeight:700, color:c.tp }}>Manage week</div>
+            <button onClick={onClose} style={sx.pickerCancel}>Close</button>
+          </div>
+          <div style={{ fontSize:11, color:c.tm, marginBottom:18 }}>{formatWeekRange(currentWeek)} · {currentWeek}</div>
+
+          {/* Pick a different week */}
+          <button onClick={() => setStep("week-picker")} style={{
+            width:"100%", textAlign:"left", padding:"12px 14px", marginBottom:8,
+            background:c.inputBg, border:`1px solid ${c.inputBorder}`, borderRadius:10,
+            color:c.tp, cursor:"pointer",
+          }}>
+            <div style={{ fontWeight:700, fontSize:13 }}>Switch week</div>
+            <div style={{ fontSize:11, color:c.ts, marginTop:3 }}>Jump to a different week</div>
+          </button>
+
+          {/* Start blank week */}
+          <button onClick={() => { onStartBlank(currentWeek); haptic(8); onClose(); }} style={{
+            width:"100%", textAlign:"left", padding:"12px 14px", marginBottom:8,
+            background:c.accent+"15", border:`1px solid ${c.accent}50`, borderRadius:10,
+            color:c.accent, cursor:"pointer",
+          }}>
+            <div style={{ fontWeight:700, fontSize:13 }}>Start a blank week</div>
+            <div style={{ fontSize:11, color:c.ts, marginTop:3 }}>Empty plan — add exercises as you go</div>
+          </button>
+
+          {/* Bring forward */}
+          <button onClick={() => setStep("bring-forward")} style={{
+            width:"100%", textAlign:"left", padding:"12px 14px", marginBottom:8,
+            background:c.success+"15", border:`1px solid ${c.success}50`, borderRadius:10,
+            color:c.success, cursor:"pointer",
+          }}>
+            <div style={{ fontWeight:700, fontSize:13 }}>Bring forward exercises</div>
+            <div style={{ fontSize:11, color:c.ts, marginTop:3 }}>Copy plan + tech from another week</div>
+          </button>
+
+          {/* Reset week */}
+          <button onClick={() => setStep("reset-confirm")} style={{
+            width:"100%", textAlign:"left", padding:"12px 14px",
+            background:c.danger+"15", border:`1px solid ${c.danger}50`, borderRadius:10,
+            color:c.danger, cursor:"pointer",
+          }}>
+            <div style={{ fontWeight:700, fontSize:13 }}>Reset this week</div>
+            <div style={{ fontSize:11, color:c.ts, marginTop:3 }}>Clear all logged sets + measurements</div>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Step: confirm reset ──
+  if (step === "reset-confirm") {
+    return (
+      <div onClick={e => { if (e.target === e.currentTarget) onClose(); }} style={sx.modalBackdrop}>
+        <div style={sx.modalSheet}>
+          <div style={{ fontSize:15, fontWeight:700, color:c.danger, marginBottom:8 }}>Reset week?</div>
+          <div style={{ fontSize:13, color:c.ts, marginBottom:14, lineHeight:1.5 }}>
+            This clears all logged sets and body measurements for {formatWeekRange(currentWeek)}. The week's plan stays intact. This can't be undone.
+          </div>
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={() => setStep("menu")} style={{ ...sx.pickerCancel, flex:1, padding:"10px" }}>Cancel</button>
+            <button onClick={() => { onResetWeek(currentWeek); haptic(15); onClose(); }} style={{
+              flex:1, padding:"10px", borderRadius:10, border:"none",
+              background:c.danger, color:"#000", fontSize:13, fontWeight:700, cursor:"pointer",
+            }}>Reset</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Step: pick source week for bring-forward ──
+  if (step === "bring-forward") {
+    const candidates = weeksWithData.filter(wk => wk !== currentWeek);
+    return (
+      <div onClick={e => { if (e.target === e.currentTarget) onClose(); }} style={sx.modalBackdrop}>
+        <div style={sx.modalSheet}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+            <div style={{ fontSize:15, fontWeight:700, color:c.tp }}>Copy from which week?</div>
+            <button onClick={() => setStep("menu")} style={sx.pickerCancel}>Back</button>
+          </div>
+          <div style={{ fontSize:11, color:c.tm, marginBottom:14 }}>
+            Copies exercise names + technique. Recent best weights become the new targets.
+          </div>
+          {candidates.length === 0 && (
+            <div style={{ color:c.tm, fontSize:13, textAlign:"center", padding:"20px 0" }}>No other weeks have data yet</div>
+          )}
+          <div style={{ maxHeight:300, overflowY:"auto" }}>
+            {candidates.map(wk => (
+              <button key={wk} onClick={() => { onBringForward(wk, currentWeek); haptic(15); onClose(); }} style={{
+                width:"100%", textAlign:"left", padding:"10px 12px", marginBottom:6,
+                background:c.inputBg, border:`1px solid ${c.inputBorder}`, borderRadius:10,
+                color:c.tp, cursor:"pointer",
+              }}>
+                <div style={{ fontWeight:700, fontSize:13 }}>{formatWeekRange(wk)}</div>
+                <div style={{ fontSize:11, color:c.ts, marginTop:2 }}>{wk}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Step: pick a week to switch to ──
+  if (step === "week-picker") {
+    // Use a date input — easiest for arbitrary picking
+    return (
+      <div onClick={e => { if (e.target === e.currentTarget) onClose(); }} style={sx.modalBackdrop}>
+        <div style={sx.modalSheet}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+            <div style={{ fontSize:15, fontWeight:700, color:c.tp }}>Switch to week</div>
+            <button onClick={() => setStep("menu")} style={sx.pickerCancel}>Back</button>
+          </div>
+          <div style={{ fontSize:11, color:c.tm, marginBottom:14 }}>Pick any date — its week (Mon–Sun) will load.</div>
+          <input
+            type="date"
+            onChange={e => {
+              if (!e.target.value) return;
+              const wk = getWeekKeyFromDateKey(e.target.value);
+              setPickedWk(wk);
+            }}
+            style={{ ...sx.input, width:"100%", boxSizing:"border-box", marginBottom:12 }}
+          />
+          {pickedWk && pickedWk !== currentWeek && (
+            <div style={{ ...sx.cardSm, padding:"10px 12px", marginBottom:12 }}>
+              <div style={{ fontSize:12, color:c.ts }}>Week:</div>
+              <div style={{ fontWeight:700, fontSize:14, color:c.tp, marginTop:2 }}>{formatWeekRange(pickedWk)}</div>
+            </div>
+          )}
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={() => setStep("menu")} style={{ ...sx.pickerCancel, flex:1, padding:"10px" }}>Cancel</button>
+            <button
+              disabled={!pickedWk || pickedWk === currentWeek}
+              onClick={() => { onSetWeek(pickedWk); haptic(8); onClose(); }}
+              style={{
+                flex:1, padding:"10px", borderRadius:10, border:"none",
+                background: !pickedWk || pickedWk === currentWeek ? c.inputBorder : c.accent,
+                color:"#000", fontSize:13, fontWeight:700,
+                cursor: !pickedWk || pickedWk === currentWeek ? "default" : "pointer",
+                opacity: !pickedWk || pickedWk === currentWeek ? 0.5 : 1,
+              }}>Go</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FILE: components/ErrorBoundary.jsx
+// ═══════════════════════════════════════════════════════════════════
+
+class ErrorBoundary extends Component {
+  constructor(p) { super(p); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err }; }
+  reset = async () => {
+    if (!confirm("Reset all data? This cannot be undone.")) return;
+    await clearStore(); location.reload();
+  };
+  render() {
+    if (!this.state.err) return this.props.children;
+    return (
+      <div style={{ minHeight:"100vh", background:c.bg, color:c.tp, padding:24, fontFamily:"-apple-system,sans-serif", maxWidth:480, margin:"0 auto" }}>
+        <div style={{ ...sx.card, border:`1px solid ${c.danger}`, padding:20 }}>
+          <div style={{ fontSize:18, fontWeight:700, color:c.danger, marginBottom:8 }}>Something broke</div>
+          <div style={{ fontSize:13, color:c.ts, marginBottom:14, lineHeight:1.5 }}>
+            The app hit an error and stopped. Your data is safe in storage. You can reload, or reset all data if it looks corrupted.
+          </div>
+          <pre style={{ fontSize:11, color:c.tm, background:c.inputBg, padding:10, borderRadius:8, overflowX:"auto", marginBottom:14 }}>
+            {String(this.state.err?.message || this.state.err)}
+          </pre>
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={() => location.reload()} style={{ flex:1, padding:"10px", borderRadius:10, border:`1.5px solid ${c.accent}`, background:c.accent+"20", color:c.accent, fontSize:13, fontWeight:700, cursor:"pointer" }}>Reload</button>
+            <button onClick={this.reset} style={{ flex:1, padding:"10px", borderRadius:10, border:`1.5px solid ${c.danger}`, background:c.danger+"20", color:c.danger, fontSize:13, fontWeight:700, cursor:"pointer" }}>Reset data</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FILE: views/WorkoutView.jsx
+// ═══════════════════════════════════════════════════════════════════
+
+function WorkoutView({ store, selDay, setSelDay, selDate, setSelDate, activeDateKey, todayStr, updateExercise, updateMeasurement, getPrevDK, restTimer, setRestTimer, showLegend, setShowLegend, addExerciseToDay, removeExerciseFromDay, setDayFocus, setDayRest, calendarOpen, setCalendarOpen }) {
+  const day = getDay(store, activeDateKey);
+  const activeWeek = getWeekKeyFromDateKey(activeDateKey);
+  const dayExercises = getDayPlan(store, activeDateKey);
+  const isCustomWeek = isWeekCustomized(store, activeWeek);
+  const dayIsRest = isDayRest(store, activeWeek, selDay);
+  const [showAddModal, setShowAddModal] = useState(false);
+
+  // Tapping a day pill should navigate to that DOW's actual date in the active week
+  const handleDaySelect = (d) => {
+    setSelDay(d);
+    const wkDates = weekDateKeys(activeWeek);
+    const idx = DAYS.indexOf(d);
+    const newDk = wkDates[idx];
+    setSelDate(newDk === todayStr ? null : newDk);
+  };
+
+  const handleCalendarPick = (dk) => {
+    const dow = getDOWFromKey(dk);
+    setSelDay(dow);
+    setSelDate(dk === todayStr ? null : dk);
+    setCalendarOpen?.(false);
+    haptic(8);
+  };
+
+  const toggleRest = () => {
+    setDayRest(activeWeek, selDay, !dayIsRest);
+    haptic(10);
+  };
+
+  return (
+    <>
+      {calendarOpen && (
+        <MiniCalendarDropdown
+          store={store}
+          activeDateKey={activeDateKey}
+          todayStr={todayStr}
+          onPickDate={handleCalendarPick}
+          onClose={() => setCalendarOpen?.(false)}
+        />
+      )}
+      <DayPills selected={selDay} onSelect={handleDaySelect} dimRest weekKey={activeWeek} todayStr={todayStr} store={store} />
+
+      {/* Rest-day toggle row */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10, gap:8 }}>
+        <div style={{ fontSize:12, color:c.ts, flex:1, minWidth:0 }}>
+          {dayIsRest
+            ? <span style={{ color:c.tm, fontWeight:600 }}>Rest day</span>
+            : (dayExercises.length > 0
+                ? `${dayExercises.length} exercise${dayExercises.length !== 1 ? "s" : ""} planned`
+                : "No exercises planned")}
+          {isCustomWeek && <span style={{ marginLeft:8, fontSize:10, color:c.accent, fontWeight:700, background:c.accent+"20", padding:"2px 6px", borderRadius:5 }}>CUSTOM</span>}
+        </div>
+        <button onClick={toggleRest} style={{
+          padding:"5px 11px", borderRadius:8,
+          border:`1px solid ${dayIsRest ? c.tm : c.inputBorder}`,
+          background: dayIsRest ? c.tm+"20" : "transparent",
+          color: dayIsRest ? c.tp : c.ts,
+          fontSize:11, fontWeight:700, cursor:"pointer", flexShrink:0,
+          display:"flex", alignItems:"center", gap:4,
+        }}>
+          <span style={{ fontSize:12, lineHeight:1 }}>{dayIsRest ? "✓" : "+"}</span>
+          <span>Rest day</span>
+        </button>
+      </div>
+
+      {selDate && (
+        <div style={{ fontSize:11, color:c.warning, marginBottom:10, fontWeight:600 }}>
+          Viewing {selDate} · <button onClick={() => setSelDate(null)} style={{ background:"none", border:"none", color:c.warning, textDecoration:"underline", cursor:"pointer", padding:0, fontSize:11 }}>back to today</button>
+        </div>
+      )}
+
+      {/* Rest-day card replaces the exercises list */}
+      {dayIsRest ? (
+        <div style={{ ...sx.card, padding:"24px 16px", marginBottom:14, textAlign:"center" }}>
+          <div style={{ fontSize:32, marginBottom:8 }}>💤</div>
+          <div style={{ fontWeight:700, fontSize:14, color:c.tp, marginBottom:4 }}>Rest day</div>
+          <div style={{ fontSize:12, color:c.ts, lineHeight:1.5, marginBottom:14 }}>
+            {dayExercises.length > 0
+              ? `${dayExercises.length} exercise${dayExercises.length !== 1 ? "s" : ""} hidden. Tap "Rest day" again to unmark.`
+              : "Take it easy. Body weight can still be logged below."}
+          </div>
+          <button onClick={toggleRest} style={{
+            padding:"8px 18px", borderRadius:8,
+            border:`1px solid ${c.inputBorder}`, background:c.inputBg,
+            color:c.tp, fontSize:12, fontWeight:700, cursor:"pointer",
+          }}>Unmark rest</button>
+        </div>
+      ) : (
+        <>
+          {dayExercises.length > 0 && (
+            <div style={{ ...sx.cardSm, padding:"10px 12px", marginBottom:14 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: showLegend ? 8 : 0, cursor:"pointer" }} onClick={() => setShowLegend(s => !s)}>
+                <SectionLabel>Techniques</SectionLabel>
+                <span style={{ fontSize:11, color:c.tm, marginBottom:8 }}>{showLegend ? "▲" : "▼"}</span>
+              </div>
+              {showLegend && (
+                <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
+                  {TECHNIQUES.map(t => (
+                    <div key={t.key} style={{ display:"flex", alignItems:"center", gap:4, padding:"4px 8px", borderRadius:8, background:t.color+"15", border:`1px solid ${t.color}40` }}>
+                      <span style={{ fontSize:10, fontWeight:700, color:t.color }}>{t.short}</span>
+                      <span style={{ fontSize:10, color:c.ts }}>{t.label}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {dayExercises.map(ex => {
+            const prevDK = getPrevDK(selDay);
+            const prevData = prevDK ? getExercise(store, prevDK, ex.name) : null;
+            return (
+              <ExerciseCard key={ex.name} ex={ex} color={DAY_COLORS[selDay]}
+                data={getExercise(store, activeDateKey, ex.name)}
+                prevData={prevData}
+                allExercises={dayExercises}
+                onUpdate={d => updateExercise(activeDateKey, ex.name, d)}
+                onSetCompleted={() => { if (!restTimer) setRestTimer(true); }}
+                onRemove={() => removeExerciseFromDay(activeWeek, selDay, ex.name)}
+              />
+            );
+          })}
+
+          {/* Add exercise — auto-customizes the week if it isn't already */}
+          <button onClick={() => setShowAddModal(true)} style={{
+            width:"100%", padding:"12px", marginBottom:10,
+            border:`1.5px dashed ${c.accent}`, borderRadius:12,
+            background:c.accent+"10", color:c.accent,
+            fontSize:13, fontWeight:700, cursor:"pointer",
+          }}>+ Add exercise to {DAY_LABELS[selDay]}</button>
+          {showAddModal && (
+            <AddExerciseModal
+              onConfirm={ex => addExerciseToDay(activeWeek, selDay, ex)}
+              onClose={() => setShowAddModal(false)}
+            />
+          )}
+
+          {/* Empty state when the day has nothing planned */}
+          {dayExercises.length === 0 && (
+            <div style={{ textAlign:"center", padding:"20px 0", color:c.tm, fontSize:12 }}>
+              {DAY_LABELS[selDay]} has no exercises this week. Add one above, or log body weight below.
+            </div>
+          )}
+        </>
+      )}
+
+      <div style={{ ...sx.card, padding:"12px 14px", borderLeft:`3px solid ${c.accent}`, marginTop:4 }}>
+        <div style={{ fontSize:12, fontWeight:700, color:c.tp, marginBottom:8 }}>Body Weight</div>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          <input type="number" inputMode="decimal" placeholder="e.g. 75.5" step="0.1" min="0"
+            value={day.measurements.bodyWeight || ""}
+            onChange={e => updateMeasurement(activeDateKey, "bodyWeight", e.target.value)}
+            style={{ ...sx.input, flex:1 }} />
+          <span style={{ fontSize:13, color:c.ts, fontWeight:600 }}>kg</span>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FILE: views/BodyView.jsx
+// ═══════════════════════════════════════════════════════════════════
+
+function BodyView({ store, bodyDate, setBodyDate, updateMeasurement, openMeasure, setOpenMeasure, getMeasHistory }) {
+  return (
+    <>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+        <div style={{ fontSize:13, fontWeight:600, color:c.ts }}>Logging for date</div>
+        <input type="date" value={bodyDate} onChange={e => setBodyDate(e.target.value)} style={sx.inputSm} />
+      </div>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:18 }}>
+        {MEASUREMENTS.slice(0,4).map(m => {
+          const h = getMeasHistory(m.key);
+          const latest = h.length ? h[h.length-1] : null;
+          const prev = h.length > 1 ? h[h.length-2] : null;
+          const diff = latest && prev ? (latest.val - prev.val).toFixed(1) : null;
+          const diffColor = m.key === "bodyWeight"
+            ? (parseFloat(diff) <= 0 ? c.success : c.danger)
+            : (parseFloat(diff) >= 0 ? c.success : c.danger);
+          return (
+            <div key={m.key} style={{ ...sx.cardSm, padding:"12px 14px", borderTop:`3px solid ${m.color}` }}>
+              <div style={{ fontSize:10, color:c.ts, marginBottom:4, fontWeight:600 }}>{m.label}</div>
+              <div style={{ fontSize:22, fontWeight:700, color:c.tp, lineHeight:1 }}>
+                {latest ? latest.val : <span style={{ color:c.tm }}>—</span>}
+                <span style={{ fontSize:11, color:c.ts, marginLeft:3 }}>{m.unit}</span>
+              </div>
+              {diff != null && <div style={{ fontSize:11, color:diffColor, marginTop:5, fontWeight:600 }}>{parseFloat(diff) > 0 ? "+" : ""}{diff} {m.unit}</div>}
+            </div>
+          );
+        })}
+      </div>
+      <SectionLabel>Log for {bodyDate}</SectionLabel>
+      {MEASUREMENTS.map(m => {
+        const isOpen = openMeasure === m.key;
+        const history = getMeasHistory(m.key);
+        const latest = history.length ? history[history.length-1] : null;
+        return (
+          <div key={m.key} style={{ ...sx.card, overflow:"hidden", marginBottom:8 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"11px 14px", borderLeft:`3px solid ${m.color}` }}>
+              <div>
+                <div style={{ fontWeight:600, fontSize:13, color:c.tp }}>{m.label}</div>
+                {latest
+                  ? <div style={{ fontSize:11, color:c.ts, marginTop:2 }}>Last: <strong style={{ color:m.color }}>{latest.val}{m.unit}</strong> · {latest.date.slice(5)}</div>
+                  : <div style={{ fontSize:11, color:c.tm, marginTop:2 }}>No data yet</div>}
+              </div>
+              <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                <div style={{ display:"flex", alignItems:"center", gap:4, background:c.inputBg, border:`1px solid ${c.inputBorder}`, borderRadius:8, padding:"2px 8px" }}>
+                  <input type="number" inputMode="decimal" step="0.1" min="0" placeholder="—"
+                    value={getMeasurement(store, bodyDate, m.key)}
+                    onChange={e => updateMeasurement(bodyDate, m.key, e.target.value)}
+                    style={{ width:52, border:"none", background:"transparent", color:c.tp, fontSize:14, textAlign:"center", outline:"none", padding:"5px 0" }} />
+                  <span style={{ fontSize:10, color:c.ts, fontWeight:600 }}>{m.unit}</span>
+                </div>
+                <button onClick={() => setOpenMeasure(isOpen ? null : m.key)} style={{ ...sx.btnGhost, color:isOpen ? m.color : c.tm, fontSize:14, padding:4, lineHeight:1, fontWeight:700 }}>{isOpen ? "▲" : "▼"}</button>
+              </div>
+            </div>
+            {isOpen && history.length > 0 && (
+              <div style={{ padding:"12px 14px 14px", borderTop:`1px solid ${c.div}` }}>
+                <SectionLabel>Progress</SectionLabel>
+                <MiniChart points={history} color={m.color} height={64} />
+                <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginTop:10 }}>
+                  {history.slice(-6).reverse().map(p => (
+                    <div key={p.date} style={{ background:c.inputBg, border:`1px solid ${c.inputBorder}`, borderRadius:7, padding:"4px 9px", fontSize:11 }}>
+                      <span style={{ color:c.ts }}>{p.date.slice(5)} </span>
+                      <span style={{ color:m.color, fontWeight:700 }}>{p.val}{m.unit}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FILE: views/ProgressView.jsx
+// ═══════════════════════════════════════════════════════════════════
+
+function ProgressView({ store, progressDay, setProgressDay, progressEx, setProgressEx, dateKeyIndex, todayStr }) {
+  const todayWeek = getWeekKeyFromDateKey(todayStr);
+  const planForToday = getPlanForWeek(store, todayWeek);
+  const dayExercises = planForToday[progressDay] || [];
+
+  return (
+    <>
+      <DayPills selected={progressDay} onSelect={d => { setProgressDay(d); setProgressEx(null); }} dimRest />
+      {dayExercises.length === 0 && <div style={{ color:c.ts, fontSize:13, textAlign:"center", padding:"30px 0" }}>No exercises planned for this day</div>}
+      {dayExercises.map(ex => {
+        const isOpen = progressEx === ex.name;
+        const sessionKeys = dateKeyIndex[progressDay] || [];
+        const sessions = sessionKeys.map(k => [k, getDay(store, k)]);
+        const logged = sessions.filter(([,d]) => d.exercises[ex.name]?.sets?.length > 0).length;
+        const allBests = sessions.map(([,d]) => Math.max(0, ...(d.exercises[ex.name]?.sets || []).map(s => num(s.weight)))).filter(v => v > 0);
+        const pb = allBests.length ? Math.max(...allBests) : 0;
+        const chartPts = sessions.map(([k,d]) => {
+          const sets = d.exercises[ex.name]?.sets || [];
+          const best = Math.max(0, ...sets.map(s => num(s.weight)));
+          return best > 0 ? { date:k, val:best } : null;
+        }).filter(Boolean);
+        const lastTech = sessions.map(([,d]) => d.exercises[ex.name]?.tech).filter(Boolean).slice(-1)[0];
+        const lastTechObj = TECH_BY_KEY[lastTech];
+        return (
+          <div key={ex.name} style={{ ...sx.card, borderLeft:`3px solid ${DAY_COLORS[progressDay]}`, overflow:"hidden", marginBottom:8 }}>
+            <div onClick={() => setProgressEx(isOpen ? null : ex.name)} style={{ cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center", padding:"12px 14px" }}>
+              <div>
+                <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+                  <span style={{ fontWeight:700, fontSize:13, color:c.tp }}>{ex.name}</span>
+                  {lastTechObj && <span style={sx.pill(lastTechObj.color)}>{lastTechObj.short}</span>}
+                </div>
+                <div style={{ fontSize:11, color:c.ts, marginTop:3 }}>{logged} session{logged !== 1 ? "s" : ""} logged</div>
+              </div>
+              <div style={{ textAlign:"right" }}>
+                {pb > 0 && <div style={{ fontSize:14, fontWeight:700, color:c.warning }}>{pb}kg PB</div>}
+                <div style={{ fontSize:11, color:c.ts, marginTop:2 }}>{isOpen ? "▲ hide" : "▼ chart"}</div>
+              </div>
+            </div>
+            {isOpen && (
+              <div style={{ padding:"0 14px 14px", borderTop:`1px solid ${c.div}` }}>
+                <div style={{ paddingTop:12 }}>
+                  <SectionLabel>Best weight per session (kg)</SectionLabel>
+                  <MiniChart points={chartPts} color={DAY_COLORS[progressDay]} height={64} />
+                </div>
+                {sessions.slice(-3).reverse().map(([k,d]) => {
+                  const exD = d.exercises[ex.name];
+                  if (!exD?.sets?.length) return null;
+                  const exTechObj = TECH_BY_KEY[exD.tech];
+                  return (
+                    <div key={k} style={{ marginTop:8, background:c.inputBg, border:`1px solid ${c.inputBorder}`, borderRadius:10, padding:"10px 12px" }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
+                        <span style={{ fontSize:11, color:c.ts, fontWeight:600 }}>{k}</span>
+                        {exTechObj && <span style={sx.pill(exTechObj.color)}>{exTechObj.short}</span>}
+                      </div>
+                      {exD.sets.map((ss, i) => {
+                        const ssTechObj = TECH_BY_KEY[ss.tech];
+                        return (
+                          <div key={i} style={{ display:"flex", gap:10, fontSize:12, marginBottom:3, alignItems:"center" }}>
+                            <span style={{ color:c.ts, width:22, fontWeight:600 }}>S{i+1}</span>
+                            <span style={{ color:c.tp, fontWeight:700 }}>{ss.weight||"—"}kg</span>
+                            <span style={{ color:c.ts }}>{ss.reps||"—"} reps</span>
+                            <span style={{ color:c.ts }}>RIR {ss.rir!==""&&ss.rir!=null?ss.rir:"—"}</span>
+                            {ssTechObj && <span style={{ ...sx.pill(ssTechObj.color), fontSize:9, padding:"1px 5px" }}>{ssTechObj.short}</span>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FILE: hooks/useStore.js
+// ═══════════════════════════════════════════════════════════════════
+
+function useStore() {
+  const [store, setStore] = useState({ __version: SCHEMA_VERSION, weeks: {}, days: {} });
+  const [loadState, setLoadState] = useState("loading");
+
+  useEffect(() => {
+    loadStore().then(s => {
+      if (s === null) { setLoadState("error"); return; }
+      setStore(s); setLoadState("ready");
+    });
+  }, []);
+
+  const updateExercise = useCallback((dk, name, exData) => {
+    setStore(prev => {
+      const day = prev.days[dk] || { exercises:{}, measurements:{} };
+      const next = { ...prev, days: { ...prev.days, [dk]: { ...day, exercises: { ...day.exercises, [name]: exData } } } };
+      saveStore(next); return next;
+    });
+  }, []);
+
+  const updateMeasurement = useCallback((dk, key, val) => {
+    setStore(prev => {
+      const day = prev.days[dk] || { exercises:{}, measurements:{} };
+      const next = { ...prev, days: { ...prev.days, [dk]: { ...day, measurements: { ...day.measurements, [key]: val } } } };
+      saveStore(next); return next;
+    });
+  }, []);
+
+  // Set/replace the plan for a specific week
+  const setWeekPlan = useCallback((wk, plan) => {
+    setStore(prev => {
+      const next = { ...prev, weeks: { ...prev.weeks, [wk]: { ...(prev.weeks?.[wk] || {}), plan } } };
+      saveStore(next); return next;
+    });
+  }, []);
+
+  // Set the focus label for a (week, day). Pass null to clear back to default.
+  const setDayFocus = useCallback((wk, dow, label) => {
+    setStore(prev => {
+      const weekEntry = prev.weeks?.[wk] || {};
+      const focusMap = { ...(weekEntry.focus || {}) };
+      if (label == null) delete focusMap[dow];
+      else focusMap[dow] = label;
+      const next = { ...prev, weeks: { ...prev.weeks, [wk]: { ...weekEntry, focus: focusMap } } };
+      saveStore(next); return next;
+    });
+  }, []);
+
+  // Set rest-day flag for a (week, day). Pass null to clear back to default.
+  const setDayRest = useCallback((wk, dow, isRest) => {
+    setStore(prev => {
+      const weekEntry = prev.weeks?.[wk] || {};
+      const restMap = { ...(weekEntry.rest || {}) };
+      if (isRest == null) delete restMap[dow];
+      else restMap[dow] = !!isRest;
+      const next = { ...prev, weeks: { ...prev.weeks, [wk]: { ...weekEntry, rest: restMap } } };
+      saveStore(next); return next;
+    });
+  }, []);
+
+  // Add a single exercise to a specific (week, day)
+  const addExerciseToDay = useCallback((wk, dow, exercise) => {
+    setStore(prev => {
+      const currentPlan = prev.weeks?.[wk]?.plan || WORKOUT_PLAN;
+      // Snapshot the plan into this week so future changes don't affect other weeks
+      const snapshotPlan = {};
+      for (const d of DAYS) snapshotPlan[d] = [...(currentPlan[d] || [])];
+      // Strip the seed-only fields from what we store on the plan; the plan only
+      // remembers name + target. plannedSets/plannedRir/tech are realized into day records.
+      snapshotPlan[dow] = [
+        ...snapshotPlan[dow],
+        { name: exercise.name, target: exercise.target },
+      ];
+
+      // Pre-create empty sets on every day-of-week date in this week that matches `dow`.
+      // Skip days that already have any data for this exercise (don't clobber logged sets).
+      const newDays = { ...prev.days };
+      const plannedSets = exercise.plannedSets || 0;
+      const plannedRir = exercise.plannedRir == null ? "" : String(exercise.plannedRir);
+      const tech = exercise.tech || null;
+
+      if (plannedSets > 0 || tech) {
+        for (const dk of weekDateKeys(wk)) {
+          if (getDOWFromKey(dk) !== dow) continue;
+          const day = newDays[dk] || { exercises: {}, measurements: {} };
+          // Don't overwrite existing logged data
+          if (day.exercises?.[exercise.name]) continue;
+          const seededSets = [];
+          for (let i = 0; i < plannedSets; i++) {
+            seededSets.push({ weight:"", reps:"", rir: plannedRir, tech:null, done:false });
+          }
+          newDays[dk] = {
+            ...day,
+            exercises: {
+              ...day.exercises,
+              [exercise.name]: { sets: seededSets, tech, supersetWith: null },
+            },
+          };
+        }
+      }
+
+      const next = {
+        ...prev,
+        weeks: { ...prev.weeks, [wk]: { ...(prev.weeks?.[wk] || {}), plan: snapshotPlan } },
+        days: newDays,
+      };
+      saveStore(next); return next;
+    });
+  }, []);
+
+  // Remove an exercise from a specific (week, day) — also clears its logged sets that week
+  const removeExerciseFromDay = useCallback((wk, dow, exName) => {
+    setStore(prev => {
+      const currentPlan = prev.weeks?.[wk]?.plan || WORKOUT_PLAN;
+      const snapshotPlan = {};
+      for (const d of DAYS) snapshotPlan[d] = [...(currentPlan[d] || [])];
+      snapshotPlan[dow] = snapshotPlan[dow].filter(e => e.name !== exName);
+
+      const newDays = { ...prev.days };
+      for (const dk of weekDateKeys(wk)) {
+        if (getDOWFromKey(dk) === dow && newDays[dk]?.exercises?.[exName]) {
+          const day = { ...newDays[dk], exercises: { ...newDays[dk].exercises } };
+          delete day.exercises[exName];
+          newDays[dk] = day;
+        }
+      }
+      const next = { ...prev, weeks: { ...prev.weeks, [wk]: { ...(prev.weeks?.[wk] || {}), plan: snapshotPlan } }, days: newDays };
+      saveStore(next); return next;
+    });
+  }, []);
+
+  // Reset a whole week: clear all exercise sets + body measurements for those 7 days
+  const resetWeek = useCallback((wk) => {
+    setStore(prev => {
+      const newDays = { ...prev.days };
+      for (const dk of weekDateKeys(wk)) delete newDays[dk];
+      const next = { ...prev, days: newDays };
+      saveStore(next); return next;
+    });
+  }, []);
+
+  // Bring forward: copy plan (names + tech) from sourceWk into targetWk,
+  // setting each exercise's `target` to the most recent weight logged for it (across history).
+  const bringForwardWeek = useCallback((sourceWk, targetWk) => {
+    setStore(prev => {
+      const sourcePlan = prev.weeks?.[sourceWk]?.plan || WORKOUT_PLAN;
+
+      // Build a name → most-recent-weight map (looking strictly at dates ≤ source week's last day)
+      const sourceLastDk = weekDateKeys(sourceWk)[6];
+      const recentWeightByName = {};
+      const sortedDks = Object.keys(prev.days).filter(k => k <= sourceLastDk).sort();
+      for (const dk of sortedDks) {
+        const exs = prev.days[dk]?.exercises || {};
+        for (const [name, ex] of Object.entries(exs)) {
+          const best = (ex.sets || []).reduce((a, s) => Math.max(a, num(s.weight)), 0);
+          if (best > 0) recentWeightByName[name] = best;
+        }
+      }
+
+      // Snapshot source plan into target week, replacing target reps with last weight
+      const newPlan = {};
+      for (const d of DAYS) {
+        newPlan[d] = (sourcePlan[d] || []).map(ex => ({
+          name: ex.name,
+          target: recentWeightByName[ex.name] ?? ex.target,
+        }));
+      }
+      // Also carry forward each exercise's default tech (per day) by pre-seeding day records
+      const newDays = { ...prev.days };
+      for (const dk of weekDateKeys(targetWk)) {
+        const dow = getDOWFromKey(dk);
+        const day = newDays[dk] || { exercises: {}, measurements: {} };
+        const exs = { ...day.exercises };
+        for (const ex of (sourcePlan[dow] || [])) {
+          // Find this exercise's most recent tech in source week
+          let tech = null;
+          for (const sdk of weekDateKeys(sourceWk)) {
+            if (getDOWFromKey(sdk) === dow) {
+              const t = prev.days[sdk]?.exercises?.[ex.name]?.tech;
+              if (t) tech = t;
+            }
+          }
+          // Only seed if no entry exists yet (don't overwrite logged data)
+          if (!exs[ex.name] && tech) {
+            exs[ex.name] = { sets: [], tech, supersetWith: null };
+          }
+        }
+        if (Object.keys(exs).length !== Object.keys(day.exercises || {}).length) {
+          newDays[dk] = { ...day, exercises: exs };
+        }
+      }
+
+      const next = {
+        ...prev,
+        weeks: { ...prev.weeks, [targetWk]: { ...(prev.weeks?.[targetWk] || {}), plan: newPlan } },
+        days: newDays,
+      };
+      saveStore(next); return next;
+    });
+  }, []);
+
+  // Start a blank week: explicit empty plan { MON:[], TUE:[], ..., SUN:[] }
+  const startBlankWeek = useCallback((wk) => {
+    const blank = {};
+    for (const d of DAYS) blank[d] = [];
+    setWeekPlan(wk, blank);
+  }, [setWeekPlan]);
+
+  const replaceStore = useCallback(async (raw) => {
+    const migrated = migrateToLatest(raw);
+    await saveStore(migrated);
+    setStore(migrated);
+  }, []);
+
+  return {
+    store, loadState,
+    updateExercise, updateMeasurement,
+    setWeekPlan, addExerciseToDay, removeExerciseFromDay,
+    setDayFocus, setDayRest,
+    resetWeek, bringForwardWeek, startBlankWeek,
+    replaceStore,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FILE: App.jsx — top-level shell + routing
+// ═══════════════════════════════════════════════════════════════════
+
+function AppInner() {
+  const {
+    store, loadState,
+    updateExercise, updateMeasurement,
+    setWeekPlan, addExerciseToDay, removeExerciseFromDay,
+    setDayFocus, setDayRest,
+    resetWeek, bringForwardWeek, startBlankWeek,
+    replaceStore,
+  } = useStore();
+
+  const [view, setView] = useState("today");
+  const [selDay, setSelDay] = useState(todayDay());
+  const [selDate, setSelDate] = useState(null);
+  const [progressDay, setProgressDay] = useState("MON");
+  const [progressEx, setProgressEx] = useState(null);
+  const [bodyDate, setBodyDate] = useState(dateKey(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()));
+  const [openMeasure, setOpenMeasure] = useState(null);
+  const [showLegend, setShowLegend] = useState(true);
+  const [restTimer, setRestTimer] = useState(false);
+  const [weekManagerOpen, setWeekManagerOpen] = useState(false);
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  const [focusEditing, setFocusEditing] = useState(false);
+  const [focusDraft, setFocusDraft] = useState("");
+
+  const todayStr = dateKey(new Date().getFullYear(), new Date().getMonth(), new Date().getDate());
+  const activeDateKey = selDate || todayStr;
+
+  useEffect(() => {
+    if (loadState === "ready" && Object.keys(store.days).length > 0) setShowLegend(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadState]);
+
+  // Cancel inline focus edit if the user navigates away from the current day
+  useEffect(() => { setFocusEditing(false); }, [selDay, selDate, view]);
+
+  const measHistoryByKey = useMemo(() => {
+    const res = {};
+    for (const m of MEASUREMENTS) {
+      res[m.key] = Object.entries(store.days)
+        .filter(([,d]) => d.measurements?.[m.key] != null && d.measurements[m.key] !== "")
+        .map(([k,d]) => ({ date:k, val: parseFloat(d.measurements[m.key]) }))
+        .filter(p => !isNaN(p.val))
+        .sort((a,b) => a.date.localeCompare(b.date));
+    }
+    return res;
+  }, [store]);
+
+  const dateKeyIndex = useMemo(() => {
+    const byDOW = { MON:[], TUE:[], WED:[], THU:[], FRI:[], SAT:[], SUN:[] };
+    Object.keys(store.days).forEach(k => { try { byDOW[getDOWFromKey(k)].push(k); } catch {} });
+    Object.values(byDOW).forEach(arr => arr.sort());
+    return byDOW;
+  }, [store]);
+
+  const getMeasHistory = (key) => measHistoryByKey[key] || [];
+
+  const getPrevDK = useCallback((dayName) => {
+    const arr = dateKeyIndex[dayName];
+    if (!arr) return null;
+    for (let i = arr.length - 1; i >= 0; i--) if (arr[i] < todayStr) return arr[i];
+    return null;
+  }, [dateKeyIndex, todayStr]);
+
+  const exportData = () => {
+    const blob = new Blob([JSON.stringify(store,null,2)], { type:"application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `workout_${todayStr}.json`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importData = () => {
+    const input = document.createElement("input");
+    input.type = "file"; input.accept = ".json";
+    input.onchange = async e => {
+      const f = e.target.files[0]; if (!f) return;
+      try {
+        const raw = JSON.parse(await f.text());
+        if (typeof raw !== "object" || raw == null) throw new Error("not an object");
+        await replaceStore(raw);
+        alert("✅ Restored!");
+      } catch { alert("❌ Invalid file"); }
+    };
+    input.click();
+  };
+
+  if (loadState === "loading") {
+    return (
+      <div style={{ minHeight:"100vh", background:c.bg, color:c.tp, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:14, fontFamily:"-apple-system,sans-serif" }}>
+        <div style={{ width:32, height:32, border:`3px solid ${c.cardBorder}`, borderTopColor:c.accent, borderRadius:"50%", animation:"spin 0.8s linear infinite" }}/>
+        <div style={{ color:c.ts, fontSize:13 }}>Loading workouts…</div>
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    );
+  }
+
+  if (loadState === "error") {
+    return (
+      <div style={{ minHeight:"100vh", background:c.bg, color:c.tp, padding:24, fontFamily:"-apple-system,sans-serif", maxWidth:480, margin:"0 auto" }}>
+        <div style={{ ...sx.card, border:`1px solid ${c.danger}`, padding:20 }}>
+          <div style={{ fontSize:16, fontWeight:700, color:c.danger, marginBottom:8 }}>Couldn't read your data</div>
+          <div style={{ fontSize:13, color:c.ts, marginBottom:14, lineHeight:1.5 }}>
+            Your saved data may be corrupted. You can reload to retry, or reset everything to start fresh.
+          </div>
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={() => location.reload()} style={{ flex:1, padding:"10px", borderRadius:10, border:`1.5px solid ${c.accent}`, background:c.accent+"20", color:c.accent, fontSize:13, fontWeight:700, cursor:"pointer" }}>Reload</button>
+            <button onClick={async () => { if (confirm("Delete all data?")) { await clearStore(); location.reload(); } }}
+              style={{ flex:1, padding:"10px", borderRadius:10, border:`1.5px solid ${c.danger}`, background:c.danger+"20", color:c.danger, fontSize:13, fontWeight:700, cursor:"pointer" }}>Reset</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const latestBW = (() => { const h = getMeasHistory("bodyWeight"); return h.length ? h[h.length-1] : null; })();
+  const headerTitle = view === "body" ? "Body measurements" : view === "progress" ? "Progress" : "";
+  const activeWeek = getWeekKeyFromDateKey(activeDateKey);
+  const dayFocus = getDayFocus(store, activeWeek, selDay);
+
+  const beginEditFocus = () => {
+    setFocusDraft(dayFocus);
+    setFocusEditing(true);
+  };
+  const commitFocus = () => {
+    const trimmed = focusDraft.trim();
+    // If the user clears it back to the default for that day, clear the override.
+    if (trimmed === (DAY_FOCUS[selDay] || "")) setDayFocus(activeWeek, selDay, null);
+    else setDayFocus(activeWeek, selDay, trimmed);
+    setFocusEditing(false);
+    haptic(8);
+  };
+  const cancelEditFocus = () => { setFocusEditing(false); };
+
+
+  return (
+    <div style={{ minHeight:"100vh", background:c.bg, color:c.tp, fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif", maxWidth:480, margin:"0 auto", paddingBottom: restTimer ? 110 : 0 }}>
+      <div style={sx.stickyHeader}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <div style={{ minWidth:0, flex:1 }}>
+            {view === "today" ? (
+              focusEditing ? (
+                <div style={{ display:"flex", alignItems:"center", gap:6, fontSize:17, fontWeight:700 }}>
+                  <span style={{ color: DAY_COLORS[selDay] }}>{DAY_LABELS[selDay]} ·</span>
+                  <input
+                    autoFocus
+                    value={focusDraft}
+                    onChange={e => setFocusDraft(e.target.value)}
+                    onBlur={commitFocus}
+                    onKeyDown={e => {
+                      if (e.key === "Enter") commitFocus();
+                      if (e.key === "Escape") cancelEditFocus();
+                    }}
+                    placeholder="Focus…"
+                    maxLength={24}
+                    style={{
+                      flex:1, minWidth:0,
+                      background:c.inputBg, border:`1px solid ${c.accent}`,
+                      borderRadius:6, padding:"3px 8px",
+                      color:c.tp, fontSize:15, fontWeight:600, outline:"none",
+                      fontFamily:"inherit",
+                    }}
+                  />
+                </div>
+              ) : (
+                <button
+                  onClick={beginEditFocus}
+                  title="Tap to edit focus"
+                  style={{
+                    background:"none", border:"none", padding:0, cursor:"pointer",
+                    fontWeight:700, fontSize:17, letterSpacing:-0.3,
+                    color: DAY_COLORS[selDay], textAlign:"left",
+                    whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis",
+                    maxWidth:"100%",
+                    fontFamily:"inherit",
+                  }}>
+                  {DAY_LABELS[selDay]}{dayFocus ? ` · ${dayFocus}` : ""}
+                  <span style={{ fontSize:10, color:c.tm, marginLeft:6, fontWeight:500 }}>✎</span>
+                </button>
+              )
+            ) : (
+              <div style={{ fontWeight:700, fontSize:17, color:c.tp, letterSpacing:-0.3, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
+                {headerTitle}
+              </div>
+            )}
+            {view === "today" ? (
+              <div style={{ display:"flex", alignItems:"center", gap:4, marginTop:3 }}>
+                <button
+                  onClick={() => {
+                    const curWk = getWeekKeyFromDateKey(activeDateKey);
+                    const newWk = shiftWeekKey(curWk, -1);
+                    const wkDates = weekDateKeys(newWk);
+                    // Land on today if it's in that week, else Monday
+                    const target = wkDates.includes(todayStr) ? todayStr : wkDates[0];
+                    setSelDate(target === todayStr ? null : target);
+                    setSelDay(getDOWFromKey(target));
+                    haptic(5);
+                  }}
+                  title="Previous week"
+                  style={{ background:c.inputBg, border:`1px solid ${c.inputBorder}`, color:c.ts, fontSize:13, cursor:"pointer", padding:"2px 8px", borderRadius:6, lineHeight:1 }}
+                >‹</button>
+                <button onClick={() => { setCalendarOpen(o => !o); haptic(5); }} style={{
+                  background:"none", border:"none", padding:"2px 4px",
+                  color:c.ts, fontSize:12, fontWeight:600, cursor:"pointer",
+                  display:"flex", alignItems:"center", gap:5,
+                }}>
+                  <span>{formatWeekRangeCompact(getWeekKeyFromDateKey(activeDateKey))}</span>
+                  <span style={{ fontSize:10, transition:"transform 0.2s", transform: calendarOpen ? "rotate(180deg)" : "rotate(0)" }}>▾</span>
+                </button>
+                <button
+                  onClick={() => {
+                    const curWk = getWeekKeyFromDateKey(activeDateKey);
+                    const newWk = shiftWeekKey(curWk, 1);
+                    const wkDates = weekDateKeys(newWk);
+                    const target = wkDates.includes(todayStr) ? todayStr : wkDates[0];
+                    setSelDate(target === todayStr ? null : target);
+                    setSelDay(getDOWFromKey(target));
+                    haptic(5);
+                  }}
+                  title="Next week"
+                  style={{ background:c.inputBg, border:`1px solid ${c.inputBorder}`, color:c.ts, fontSize:13, cursor:"pointer", padding:"2px 8px", borderRadius:6, lineHeight:1 }}
+                >›</button>
+              </div>
+            ) : (
+              latestBW && <div style={{ fontSize:12, color:c.accent, marginTop:2, fontWeight:600 }}>⚖ {latestBW.val}kg · {latestBW.date.slice(5)}</div>
+            )}
+          </div>
+          <div style={{ display:"flex", gap:6, flexShrink:0 }}>
+            {view === "today" && (
+              <button onClick={() => { setWeekManagerOpen(true); haptic(8); }} title="Manage week" style={sx.headerBtn(c.tp, false)}>⚙</button>
+            )}
+            {view === "today" && getDayPlan(store, activeDateKey).length > 0 && (
+              <button onClick={() => { setRestTimer(true); haptic(8); }} style={sx.headerBtn(c.accent, restTimer)}>⏱</button>
+            )}
+            <button onClick={exportData} style={sx.headerBtn(c.success, false)}>↓</button>
+            <button onClick={importData} style={sx.headerBtn(c.accent, false)}>↑</button>
+          </div>
+        </div>
+        <div style={{ display:"flex", gap:2, background:"#111", borderRadius:10, padding:3, marginTop:10, border:`1px solid ${c.cardBorder}` }}>
+          {[["today","Workout"],["body","Body"],["progress","Progress"]].map(([v,l]) => (
+            <button key={v} onClick={() => { setView(v); haptic(5); }} style={{ flex:1, padding:"8px 0", borderRadius:8, border:"none", background:view===v?"#2a2a2a":"transparent", color:view===v?c.tp:c.tm, fontSize:11, fontWeight:view===v?700:500, cursor:"pointer" }}>{l}</button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ padding:"14px 14px 80px" }}>
+        {view === "today" && (
+          <WorkoutView
+            store={store} selDay={selDay} setSelDay={setSelDay} selDate={selDate} setSelDate={setSelDate}
+            activeDateKey={activeDateKey} todayStr={todayStr}
+            updateExercise={updateExercise} updateMeasurement={updateMeasurement} getPrevDK={getPrevDK}
+            restTimer={restTimer} setRestTimer={setRestTimer}
+            showLegend={showLegend} setShowLegend={setShowLegend}
+            addExerciseToDay={addExerciseToDay} removeExerciseFromDay={removeExerciseFromDay}
+            setDayFocus={setDayFocus} setDayRest={setDayRest}
+            calendarOpen={calendarOpen} setCalendarOpen={setCalendarOpen}
+          />
+        )}
+        {view === "body" && (
+          <BodyView
+            store={store} bodyDate={bodyDate} setBodyDate={setBodyDate}
+            updateMeasurement={updateMeasurement}
+            openMeasure={openMeasure} setOpenMeasure={setOpenMeasure}
+            getMeasHistory={getMeasHistory}
+          />
+        )}
+        {view === "progress" && (
+          <ProgressView
+            store={store} progressDay={progressDay} setProgressDay={setProgressDay}
+            progressEx={progressEx} setProgressEx={setProgressEx} dateKeyIndex={dateKeyIndex}
+            todayStr={todayStr}
+          />
+        )}
+      </div>
+
+      {restTimer && <RestTimer onClose={() => setRestTimer(false)} />}
+
+      {weekManagerOpen && (
+        <WeekManagerModal
+          store={store}
+          currentWeek={getWeekKeyFromDateKey(activeDateKey)}
+          onClose={() => setWeekManagerOpen(false)}
+          onResetWeek={resetWeek}
+          onBringForward={bringForwardWeek}
+          onStartBlank={startBlankWeek}
+          onSetWeek={(wk) => {
+            // Jump to Monday of that week, MON view
+            const mondayKey = weekDateKeys(wk)[0];
+            setSelDate(mondayKey);
+            setSelDay("MON");
+            setView("today");
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+export default function App() {
+  return <ErrorBoundary><AppInner /></ErrorBoundary>;
+}
